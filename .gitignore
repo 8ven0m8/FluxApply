@@ -1,0 +1,6 @@
+.venv
+.env
+*.ipynb
+*.pdf
+*.docx
+__pycache__
