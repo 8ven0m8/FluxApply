@@ -1,3 +1,7 @@
+#--------------------------------------#
+# All schemas required for the project #
+#--------------------------------------#
+
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -30,7 +34,7 @@ class Details(BaseModel):
     profile_urls: list[str] = Field(default_factory=list, description="Core identity/profile URLs only — the candidate's own LinkedIn, GitHub, portfolio/personal website, Kaggle, LeetCode, HuggingFace, Codeforces, HackerRank, Medium, or similar profile pages.")
     reference_urls: list[str] = Field(default_factory=list, description="All other URLs mentioned in the resume that are NOT core profile links — e.g. individual project repo links, deployed app/demo links, certification/credential links, video demos, published papers, datasets, or any other supporting reference link tied to a specific project or achievement.")
     institutions: list[str] = Field(default_factory=list, description="All educational institutions attended by the candidate, including schools, colleges, universities, and other training institutions.")
-    education: list[str] = Field(default_factory=list, description="All Degrees obtained by the candidate along with the CGPA/percentage or any metrics of evaluation they obtained.")
+    education: list[str] = Field(default_factory=list, description="All Degrees obtained by the candidate along with Passing year or duration of degree mentioned and the CGPA/percentage or any metrics of evaluation they obtained.")
 
 class Experience(BaseModel):
     company: str | None = None
@@ -39,7 +43,7 @@ class Experience(BaseModel):
     description: str | None = None
 
 class Project(BaseModel):
-    name: str
+    title: str
     description: str | None = None
     technologies: list[str] = Field(default_factory=list, description="Please mention all the relevant technologies used to make the project, go through the description and figure out yourself as well.")
 
@@ -49,3 +53,14 @@ class ResumeFact(BaseModel):
     projects: list[Project] = Field(default_factory=list, description="All projects mentioned in the resume. Include the project name, description, and technologies used if available.")
     experience: list[Experience] = Field(default_factory=list, description="All professional experiences mentioned in the resume. Include the company name, job role, employment dates, and a brief description of responsibilities or accomplishments if provided.")
     achievements: list[str] = Field(default_factory=list, description="All achievements, awards, certifications, scholarships, recognitions, competition results, publications, or other notable accomplishments mentioned in the resume.")
+
+############################## Tailored content generator schemas ############################
+
+class TailoredResumeContent(BaseModel):
+    summary: str = Field(description="A short resume summary of about 2-3 sentences focusing on the role that is mentioned in job description, do not invent any details. You can only use details provided in the resume. Mention the word 'Aspiring' infront of the job role which the client is applying for if and only if client has no experience in that role else ignore this. keep descriptions concise, avoid adding descriptive filler adjectives. One more important thing is that it should read more naturally.")
+    details: Details = Field(description="Personal, contact, profile, and educational information of the candidate.")
+    skills: list[str] = Field(default_factory=list, description="A subset of the skills from the original resume's skills list that are relevant to the job description. You MUST NOT add, infer, or include any skill, tool, or technology that is not verbatim present in the original skills list, even if it seems implied by the projects, experience, or job description. For example, if 'Natural Language Processing' or 'Prompt Engineering' or 'Google Cloud' are not explicitly listed in the original skills, do not include them, even if the candidate's projects involve NLP or cloud work. Only reorder or filter the existing list — never expand it.")
+    projects: list[Project] = Field(default_factory=list, description="All projects mentioned in the resume. Include the project name, description, and technologies used if available. Tailor the description so that it fits the job description provided. Do not invent your own details.")
+    experience: list[Experience] = Field(default_factory=list, description="All professional experiences mentioned in the resume. Include the company name, job role, employment dates, and a brief description of responsibilities or accomplishments if provided. Tailor the description so that it fits the job description provided. Do not invent your own details.")
+    achievements: list[str] = Field(default_factory=list, description="All achievements, awards, certifications, scholarships, recognitions, competition results, publications, or other notable accomplishments mentioned in the resume.")
+

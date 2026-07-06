@@ -1,4 +1,8 @@
-## Setup
+#----------------------------------------------------#
+# Extracts every important detail from the resume    #
+# and provides in a beautiful json format using llms #
+#----------------------------------------------------#
+
 from os import getenv
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI 

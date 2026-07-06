@@ -1,3 +1,13 @@
+#----------------------------------------------------------#
+# Scrapes the link of the Apply page provided, or requests #
+# a copy and paste option if the length of the scraped     #
+# content is less than MIN_CHAR_REQUIRD.                   #
+#                                                          #
+# Then the content is passed to llm for a schematic output #
+# that highlights specific roles to each statements on its #
+# importance                                               #
+#----------------------------------------------------------#
+
 import asyncio
 from typing import TypedDict, Optional
 from os import getenv
@@ -177,21 +187,21 @@ async def setup_checkpointer():
     async with AsyncPostgresSaver.from_conn_string(DB_URI) as checkpointer:
         await checkpointer.setup()
 
-def persist_refined_jd(job_id: str, refined_jd: RefinedJD):
+def persist_refined_jd(user_id: str, job_id: str, refined_jd: RefinedJD):
     """Save a refined JD to the store, keyed by job_id, so it can be fetched later without re-scraping."""
     with PostgresStore.from_conn_string(DB_URI) as store:
         store.setup()
-        store.put(("user", "u1", "refined_jds"), job_id, {"data": refined_jd.model_dump()})
+        store.put(("user", user_id, "refined_jds"), job_id, {"data": refined_jd.model_dump()})
 
 
-def get_refined_jd(job_id: str) -> RefinedJD:
+def get_refined_jd(user_id: str, job_id: str) -> RefinedJD:
     """Fetch a previously saved refined JD directly from the store."""
     with PostgresStore.from_conn_string(DB_URI) as store:
-        result = store.get(("user", "u1", "refined_jds"), job_id)
+        result = store.get(("user", user_id, "refined_jds"), job_id)
         return RefinedJD.model_validate(result.value["data"])
 
 
-async def process_jd(url: str = None, pasted_text: str = None, thread_id: str = "default") -> dict:
+async def process_jd(user_id: str, url: str = None, pasted_text: str = None, thread_id: str = "default") -> dict:
     async with AsyncPostgresSaver.from_conn_string(DB_URI, serde=serde) as checkpointer:
         graph = builder.compile(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": thread_id}}
@@ -202,7 +212,7 @@ async def process_jd(url: str = None, pasted_text: str = None, thread_id: str = 
             return {"status": "needs_paste", "message": interrupt_data.get("message"), "thread_id": thread_id}
 
         refined_jd = result["refined_jd"]
-        persist_refined_jd(job_id=thread_id, refined_jd=refined_jd)
+        persist_refined_jd(user_id=user_id, job_id=thread_id, refined_jd=refined_jd)
 
         return {
             "status": "done",
@@ -211,14 +221,14 @@ async def process_jd(url: str = None, pasted_text: str = None, thread_id: str = 
         }
 
 
-async def resume_with_paste(pasted_text: str, thread_id: str = "default") -> dict:
+async def resume_with_paste(user_id: str, pasted_text: str, thread_id: str = "default") -> dict:
     async with AsyncPostgresSaver.from_conn_string(DB_URI, serde=serde) as checkpointer:
         graph = builder.compile(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": thread_id}}
         result = await graph.ainvoke(Command(resume=pasted_text), config)
 
         refined_jd = result["refined_jd"]
-        persist_refined_jd(job_id=thread_id, refined_jd=refined_jd) 
+        persist_refined_jd(user_id=user_id, job_id=thread_id, refined_jd=refined_jd)
 
         return {
             "status": "done",
