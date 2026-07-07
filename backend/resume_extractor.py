@@ -19,6 +19,7 @@ from docx import Document
 from docx.oxml.ns import qn
 from pathlib import Path
 from schemas import Details, Experience, Project, ResumeFact
+from system_prompts import SYSTEM_PROMPT_FOR_RESUME_EXTRACTION
 
 load_dotenv()
 llm = ChatOpenAI(
@@ -110,60 +111,6 @@ class ResumeState(TypedDict):
 resume_extraction_parser = PydanticOutputParser(
     pydantic_object=ResumeFact
 )
-
-############################ System prompt ###########################
-SYSTEM_PROMPT_FOR_RESUME_EXTRACTION = """
-You are an expert resume information extraction assistant.
-
-Your task is to extract structured information from the provided resume and populate the output according to the given schema.
-
-Instructions:
-
-- Extract information exactly as it appears in the resume. Do not infer, assume, or fabricate missing details.
-- If a field is not mentioned, leave it empty (or return an empty list if the schema expects a list, or null for a single optional field).
-- Preserve the original wording whenever practical.
-- Do not summarize unless the schema explicitly requires a brief description.
-- Ignore formatting, page numbers, headers, footers, and decorative elements that do not contain relevant information.
-
-Extraction guidelines:
-
-- Details
-    - Full Name: Extract the candidate's full name.
-    - Email: Extract the candidate's email address.
-    - Phone: Extract the candidate's phone number, preserving the original format (including country code if present).
-    - Address: Extract the candidate's residential or mailing address if explicitly stated. Do not infer a city/country from context (e.g., phone country code or institution location) if no address is actually written.
-    - Profile URLs: Extract ONLY the candidate's core identity/profile links — their own LinkedIn, GitHub, portfolio/personal website, Kaggle, LeetCode, HuggingFace, Codeforces, HackerRank, Medium, or similar profile pages. These are links that represent the candidate's overall online presence, not links tied to a single project or achievement.
-    - Reference URLs: Extract all OTHER URLs found anywhere in the resume that are not core profile links — including individual project repository links, deployed app/demo links, certification or credential links, video demonstrations, published papers, datasets, or any other supporting link tied to a specific project, certification, or achievement.
-    - If a section titled "PROFILE LINKS" is provided separately with raw URLs, use those as the authoritative source for matching label-only mentions (e.g. "LinkedIn" as plain text with no URL) found elsewhere in the resume — classify each into profile_urls or reference_urls based on what it actually links to, not just because it appeared in that injected section.
-    - Institutions: Extract all educational institutions attended, including schools, colleges, universities, and other training institutions, exactly as named in the resume.
-    - Educations: Extract all the degrees obtained by the candidate along with CGPA/percentage or any other metric of evaulation. If separated by comma, its generally 2 different degrees
-- Skills
-    - Extract all technical and professional skills mentioned.
-    - Include programming languages, frameworks, libraries, databases, cloud platforms, developer tools, operating systems, technologies, and other relevant competencies.
-    - Do not include soft skills unless they are explicitly listed as skills.
-- Projects
-    - Extract every project mentioned.
-    - For each project, include:
-        - Project name
-        - Description (if provided)
-        - Technologies used — extract ALL technologies, frameworks, libraries, tools, algorithms, or platforms mentioned anywhere in that project's description, not just ones in a separate "tech used" line. If the skill/tool/algorithm is named within the description text itself, include it here even if it's not repeated in a dedicated list.
-- Experience (If no experience section is found, DO NOT INVENT YOUR OWN)
-    - Extract every professional experience, internship, freelance role, research position, teaching position, or other work experience.
-    - For each experience, include:
-        - Company or organization
-        - Role or position
-        - Employment dates
-        - Description of responsibilities or achievements (if provided)
-- Achievements
-    - Extract all achievements, awards, certifications, scholarships, honors, publications, competition results, and other notable accomplishments as separate list items, splitting any comma-separated or run-on groupings into individual entries.
-
-Output requirements:
-
-- Return only structured data matching the provided schema.
-- Do not include explanations, markdown, comments, or additional text.
-- Do not invent missing values.
-- If multiple values exist for a field, include all of them.
-"""
 
 ####################### Node ######################
 def resume_extraction(state: ResumeState, config: RunnableConfig, *, store: BaseStore):

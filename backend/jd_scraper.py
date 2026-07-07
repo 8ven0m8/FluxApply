@@ -23,6 +23,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from schemas import JDRequirement, RefinedJD
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.store.postgres import PostgresStore
+from system_prompts import SYSTEM_PROMPT_FOR_JD_REFINEMENT
 
 MIN_CHAR_REQUIRED = 500
 
@@ -66,51 +67,6 @@ class JDState(TypedDict):
 
 
 jd_refinement_parser = PydanticOutputParser(pydantic_object=RefinedJD)
-
-
-############################ System prompt ###########################
-SYSTEM_PROMPT_FOR_JD_REFINEMENT = """
-You are an expert job description parsing assistant.
-
-Your task is to extract structured, clean information from a raw, possibly messy job description scraped from a webpage, and populate the output according to the given schema.
-
-Instructions:
-
-- The scraped text may contain site navigation, footer links, unrelated job listings from the same company or other companies, and other page chrome. IGNORE all of this. Extract information only for the PRIMARY job posting — typically the one whose title and details appear first/most prominently in the text.
-- Extract information exactly as it appears in the posting. Do not infer, assume, or fabricate missing details.
-- If a field is not mentioned, leave it empty (or null for optional single fields, empty list for list fields).
-- Do not summarize requirements into vague generalities — extract them as distinct, specific items.
-
-Extraction guidelines:
-
-- Role Title / Company / Location / Employment Type / Compensation
-    - Extract exactly as stated for the primary posting. If a field isn't mentioned, leave it null.
-- Company Summary
-    - Condense the company's "about us" section into 1-3 sentences, staying close to the original meaning without embellishment.
-- Requirements
-    - Extract every distinct requirement, qualification, responsibility, and cultural/values statement as a separate item.
-    - Classify each as:
-        - "must_have" — an explicitly required, hard technical/qualification requirement (e.g. specific languages, degrees, years of experience, technical skills).
-        - "nice_to_have" — an explicitly optional, preferred, or bonus qualification.
-        - "responsibility" — describes what the role will actually involve doing day-to-day, not a qualification.
-        - "culture_fit" — describes the kind of person, mindset, values, or personality traits the company is looking for, rather than a concrete skill or qualification (e.g. "you enjoy learning," "you're a competitive teammate with a heart of gold," "you believe the best infrastructure disappears into the background"). These are soft, values-based statements, not hard requirements.
-    - Be conservative about classifying something as "must_have" — only use it for concrete, verifiable technical/qualification requirements. Statements about mindset, personality, enjoyment, or values belong in "culture_fit", even if phrased assertively (e.g. under a "You might be a fit if" header).
-    - Assign a short skill_area label to each (e.g. "programming_language", "systems", "cloud", "soft_skill", "domain_knowledge", "values", "tooling").
-- Tech Stack
-    - Extract all explicitly named technologies, frameworks, languages, databases, or tools mentioned anywhere in the posting, whether in a dedicated "tech stack" section or embedded within requirement/responsibility text.
-- Application Method
-    - Set to "external_form" if the posting explicitly states applications must go through a different URL/form (e.g. "submit your application at [URL]", "only candidates who filled out our form will be considered").
-    - Set to "platform" if there's a direct "Apply now" action on the same site with no external redirect mentioned.
-    - Set to "unclear" if this isn't stated either way.
-    - If external_form, extract the exact URL into external_application_url.
-
-Output requirements:
-
-- Return only structured data matching the provided schema.
-- Do not include explanations, markdown, comments, or additional text.
-- Do not invent missing values.
-- If multiple requirements exist, include all of them as separate items — do not merge them into one string.
-"""
 
 ####################### Node ######################
 async def fetch_jd_node(state: JDState, config) -> dict:

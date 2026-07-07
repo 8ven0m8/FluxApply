@@ -4,6 +4,9 @@
 
 from pydantic import BaseModel, Field
 from typing import Optional
+# Specifying todays date
+from datetime import datetime
+todays_date = datetime.now().strftime("%B %d, %Y")
 
 ##################### JD Scraper schemas ######################
 class JDRequirement(BaseModel):
@@ -55,7 +58,7 @@ class ResumeFact(BaseModel):
     achievements: list[str] = Field(default_factory=list, description="All achievements, awards, certifications, scholarships, recognitions, competition results, publications, or other notable accomplishments mentioned in the resume.")
 
 ############################## Tailored content generator schemas ############################
-
+# Generating resume
 class TailoredResumeContent(BaseModel):
     summary: str = Field(description="A short resume summary of about 2-3 sentences focusing on the role that is mentioned in job description, do not invent any details. You can only use details provided in the resume. Mention the word 'Aspiring' infront of the job role which the client is applying for if and only if client has no experience in that role else ignore this. keep descriptions concise, avoid adding descriptive filler adjectives. One more important thing is that it should read more naturally.")
     details: Details = Field(description="Personal, contact, profile, and educational information of the candidate.")
@@ -64,3 +67,32 @@ class TailoredResumeContent(BaseModel):
     experience: list[Experience] = Field(default_factory=list, description="All professional experiences mentioned in the resume. Include the company name, job role, employment dates, and a brief description of responsibilities or accomplishments if provided. Tailor the description so that it fits the job description provided. Do not invent your own details.")
     achievements: list[str] = Field(default_factory=list, description="All achievements, awards, certifications, scholarships, recognitions, competition results, publications, or other notable accomplishments mentioned in the resume.")
 
+# Generating cover letter
+class CoverLetterHeader(BaseModel):
+    full_name: str | None = Field(default=None, description="Full name of the candidate.")
+    email: str | None = Field(default=None, description="Email address of the candidate.")
+    phone: str | None = Field(default=None, description="Phone number of the candidate.")
+    address: str | None = Field(default=None, description="Residential or mailing address of the candidate.")
+    date: str = Field(default=todays_date, description="You can only use what is provided by default, Do not put your own date")
+
+
+class CoverLetterEmployer(BaseModel):
+    hiring_manager_name: str | None = Field(default=None, description="Full name of the hiring manager")
+    hiring_manager_title: str | None = Field(default=None, description="Job title of the hiring manager, if known.")
+    company_name: str | None = Field(default=None, description="Company name")
+    company_address: str | None = Field(default=None, description="Company address/location if mentioned")
+
+
+class CoverLetterBodyParagraph(BaseModel):
+    content: str = Field(description="A body paragraph connecting the applicant's skills and experience to the job requirements, often including a specific example or accomplishment.")
+
+
+class CoverLetter(BaseModel):
+    header: CoverLetterHeader = Field(description="The applicant includes their contact information (name, phone, email, sometimes address) and the date.")
+    employers_info: CoverLetterEmployer = Field(description="List the hiring manager's name (if known), their title, the company name, and the company address.")
+    salutation: str = Field(description="The applicant opens with a greeting like 'Dear [Name of the hiring manager].' If they don't have a specific name, 'Dear Hiring Manager'")
+    opening_paragraph: str = Field(description="States the position being applied for and grabs attention, often with a hook such as a notable achievement, genuine enthusiasm for the company, or a mutual connection referral.")
+    body_paragraphs: list[CoverLetterBodyParagraph] = Field(description="One or two paragraphs forming the core of the letter, connecting skills/experience to the role and showing fit with the company's specific needs.")
+    closing_paragraph: str = Field(description="Reaffirms interest in the role, briefly restates the applicant's value, and includes a call to action inviting further discussion.")
+    sign_off: str = Field(default="Sincerely,", description="The closing valediction, e.g. 'Sincerely,' or 'Best regards,'")
+    signature_name: str | None = Field(default=None, description="The applicant's name as it appears under the sign-off, typically matching full_name in the header.")
