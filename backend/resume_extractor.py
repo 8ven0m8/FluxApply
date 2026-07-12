@@ -141,7 +141,7 @@ builder.add_node('extract_resume', resume_extraction)
 builder.add_edge(START, 'extract_resume')
 builder.add_edge('extract_resume', END)
 
-DB_URI = "postgresql://postgres:postgres@localhost:54320/postgres?sslmode=disable"
+DB_URI = getenv("DB_URI")
 
 def process_resume(file_path: str, user_id: str) -> str:
     resume_text = extract_resume_text(file_path)

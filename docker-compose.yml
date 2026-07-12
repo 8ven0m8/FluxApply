@@ -1,4 +1,4 @@
-name: automatic-job-applying-agent
+name: FluxAgent
 
 services:
   postgres:

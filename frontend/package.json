@@ -1,0 +1,30 @@
+{
+  "name": "fluxapply-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "predev": "docker compose -f ../docker-compose.yml up -d",
+    "dev": "concurrently -n frontend,backend -c blue,green \"npm:dev:frontend\" \"npm:dev:backend\"",
+    "dev:frontend": "next dev",
+    "dev:backend": "cd ../backend && ../.venv/bin/uvicorn app:app --reload --port 8000",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.2.5",
+    "next-auth": "^4.24.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.19",
+    "concurrently": "^8.2.2",
+    "postcss": "^8.4.39",
+    "tailwindcss": "^3.4.4",
+    "typescript": "^5.5.3"
+  }
+}

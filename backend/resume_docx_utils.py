@@ -196,8 +196,10 @@ def extract_style_profile(source) -> dict:
     if body_fonts:
         style["body_font"] = body_fonts.most_common(1)[0][0]
 
-    # --- bullets: does the doc use a List Bullet-style paragraph anywhere? ---
-    style["use_bullets"] = any("List Bullet" in (p.style.name or "") for p in doc.paragraphs)
+    style["use_bullets"] = any(
+        p.style is not None and "List Bullet" in (p.style.name or "")
+        for p in doc.paragraphs
+    )
 
     return style
 

@@ -90,8 +90,8 @@ class CoverLetterBodyParagraph(BaseModel):
 class CoverLetter(BaseModel):
     header: CoverLetterHeader = Field(description="The applicant includes their contact information (name, phone, email, sometimes address) and the date.")
     employers_info: CoverLetterEmployer = Field(description="List the hiring manager's name (if known), their title, the company name, and the company address.")
-    salutation: str = Field(description="The applicant opens with a greeting like 'Dear [Name of the hiring manager].' If they don't have a specific name, 'Dear Hiring Manager'")
-    opening_paragraph: str = Field(description="States the position being applied for and grabs attention, often with a hook such as a notable achievement, genuine enthusiasm for the company, or a mutual connection referral.")
+    ation: str = Field(description="The applicant opens with a greeting like 'Dear [Name of the hiring manager].' If they don't have a specific name, 'Dear Hiring Manager'")
+    openingsalut_paragraph: str = Field(description="States the position being applied for and grabs attention, often with a hook such as a notable achievement, genuine enthusiasm for the company, or a mutual connection referral.")
     body_paragraphs: list[CoverLetterBodyParagraph] = Field(description="One or two paragraphs forming the core of the letter, connecting skills/experience to the role and showing fit with the company's specific needs.")
     closing_paragraph: str = Field(description="Reaffirms interest in the role, briefly restates the applicant's value, and includes a call to action inviting further discussion.")
     sign_off: str = Field(default="Sincerely,", description="The closing valediction, e.g. 'Sincerely,' or 'Best regards,'")

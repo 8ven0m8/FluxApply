@@ -37,7 +37,7 @@ llm = ChatOpenAI(
     model="auto" 
 )
 
-DB_URI = "postgresql://postgres:postgres@localhost:54320/postgres?sslmode=disable"
+DB_URI = getenv("DB_URI")
 BLOCKED_DOMAINS = ["linkedin.com", "indeed.com"]
 
 def needs_manual_paste(url: str) -> bool:
@@ -150,11 +150,15 @@ def persist_refined_jd(user_id: str, job_id: str, refined_jd: RefinedJD):
         store.put(("user", user_id, "refined_jds"), job_id, {"data": refined_jd.model_dump()})
 
 
-def get_refined_jd(user_id: str, job_id: str) -> RefinedJD:
-    """Fetch a previously saved refined JD directly from the store."""
-    with PostgresStore.from_conn_string(DB_URI) as store:
-        result = store.get(("user", user_id, "refined_jds"), job_id)
-        return RefinedJD.model_validate(result.value["data"])
+def get_refined_jd(store: BaseStore, user_id: str, job_id: str) -> RefinedJD:
+    """Fetch a previously saved refined JD from the given store."""
+    result = store.get(("user", user_id, "refined_jds"), job_id)
+    if result is None:
+        raise ValueError(
+            f"No refined JD found for job_id={job_id!r}, user_id={user_id!r}. "
+            f"Has this JD been scraped/refined yet?"
+        )
+    return RefinedJD.model_validate(result.value["data"])
 
 
 async def process_jd(user_id: str, url: str = None, pasted_text: str = None, thread_id: str = "default") -> dict:
