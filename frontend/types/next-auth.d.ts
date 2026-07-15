@@ -4,11 +4,15 @@ import "next-auth/jwt";
 declare module "next-auth" {
   interface Session {
     idToken?: string;
+    error?: "RefreshFailed" | "NoRefreshToken";
   }
 }
 
 declare module "next-auth/jwt" {
   interface JWT {
     idToken?: string;
+    refreshToken?: string;
+    idTokenExpiresAt?: number; // seconds since epoch
+    error?: "RefreshFailed" | "NoRefreshToken";
   }
 }

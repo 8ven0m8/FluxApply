@@ -2,21 +2,39 @@
 @tailwind components;
 @tailwind utilities;
 
-html {
+:root {
   color-scheme: light;
+  --color-ink: 18 24 27;          /* #12181B */
+  --color-paper: 247 245 241;     /* #F7F5F1 */
+  --color-line: 220 216 207;      /* #DCD8CF */
+  --color-accent: 59 110 94;      /* #3B6E5E — muted pine */
+  --color-accent-dark: 39 74 63;  /* #274A3F */
+  --color-rust: 181 80 47;        /* #B5502F — used sparingly for errors */
+  --color-surface: 255 255 255;   /* card/input background */
+}
+
+.dark {
+  color-scheme: dark;
+  --color-ink: 237 234 227;       /* warm off-white text */
+  --color-paper: 22 26 27;        /* warm near-black background */
+  --color-line: 43 48 46;         /* subtle warm-dark divider */
+  --color-accent: 111 168 144;    /* brighter pine — legible on dark bg */
+  --color-accent-dark: 156 203 180;
+  --color-rust: 227 138 99;       /* brighter rust for dark-bg contrast */
+  --color-surface: 30 36 34;      /* slightly lighter than paper for elevation */
 }
 
 body {
-  background-color: #f7f5f1;
-  color: #12181b;
+  background-color: rgb(var(--color-paper));
+  color: rgb(var(--color-ink));
 }
 
 ::selection {
-  background-color: #3b6e5e;
-  color: #f7f5f1;
+  background-color: rgb(var(--color-accent));
+  color: rgb(var(--color-paper));
 }
 
 .focus-ring:focus-visible {
-  outline: 2px solid #3b6e5e;
+  outline: 2px solid rgb(var(--color-accent));
   outline-offset: 2px;
 }
