@@ -1,0 +1,5 @@
+# .dockerignore
+frontend/
+node_modules/
+*.md
+.git/
