@@ -15,15 +15,19 @@ from os import getenv
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 from pydantic import BaseModel, Field
+from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt, Command
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.store.base import BaseStore
 from schemas import JDRequirement, RefinedJD
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-from langgraph.store.postgres import PostgresStore
 from system_prompts import SYSTEM_PROMPT_FOR_JD_REFINEMENT
+from usage_tracking import log_llm_usage
+from ssrf_guard import assert_public_url, SSRFBlockedError
 
 MIN_CHAR_REQUIRED = 500
 
@@ -45,15 +49,43 @@ def needs_manual_paste(url: str) -> bool:
 
 
 async def scrape_jd(url: str) -> str:
+    # Fail fast on the URL the user actually submitted, before a browser is
+    # even launched.
+    assert_public_url(url)
+
+    # A URL can pass the check above but still redirect (HTTP 3xx, or a JS/meta
+    # redirect) to an internal address once the page starts loading. Route
+    # every request the page makes — including the initial one and any
+    # redirects — through the same check, and abort anything that fails it.
+    blocked_url = None
+
+    async def _guarded_route(route):
+        nonlocal blocked_url
+        try:
+            assert_public_url(route.request.url)
+        except SSRFBlockedError:
+            blocked_url = route.request.url
+            await route.abort()
+            return
+        await route.continue_()
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
         )
-        await page.goto(url, wait_until="networkidle", timeout=30000)
-        await page.wait_for_timeout(1500)
-        text = await page.inner_text("body")
-        await browser.close()
+        await page.route("**/*", _guarded_route)
+        try:
+            await page.goto(url, wait_until="networkidle", timeout=30000)
+            if blocked_url:
+                raise SSRFBlockedError(
+                    f"Blocked navigation to non-public address via: {blocked_url}"
+                )
+            await page.wait_for_timeout(1500)
+            text = await page.inner_text("body")
+        finally:
+            await browser.close()
+
     return text
 
 ############################# States ################################
@@ -102,13 +134,16 @@ def refine_jd(state: JDState, config) -> dict:
     if not jd_text:
         raise ValueError("No jd_text found in state — nothing to refine.")
 
+    user_id = config["configurable"].get("user_id", "unknown")
+
     prompt = (
         f"{jd_refinement_parser.get_format_instructions()}\n\n"
         f"{SYSTEM_PROMPT_FOR_JD_REFINEMENT}\n\n"
         f"RAW SCRAPED JD TEXT:\n{jd_text}"
     )
 
-    output = llm.invoke(prompt) 
+    output = llm.invoke(prompt)
+    log_llm_usage(user_id=user_id, endpoint="jd_submit", node_name="refine_jd", ai_message=output)
     refined: RefinedJD = jd_refinement_parser.parse(output.content)
 
     return {"refined_jd": refined}
@@ -143,11 +178,45 @@ async def setup_checkpointer():
     async with AsyncPostgresSaver.from_conn_string(DB_URI) as checkpointer:
         await checkpointer.setup()
 
-def persist_refined_jd(user_id: str, job_id: str, refined_jd: RefinedJD):
-    """Save a refined JD to the store, keyed by job_id, so it can be fetched later without re-scraping."""
-    with PostgresStore.from_conn_string(DB_URI) as store:
-        store.setup()
-        store.put(("user", user_id, "refined_jds"), job_id, {"data": refined_jd.model_dump()})
+
+# Module-level handle to the pool so close_checkpointer_pool() can close the
+# exact pool open_checkpointer_pool() created. Only app.py's lifespan touches
+# these two functions — everything else (process_jd, resume_with_paste)
+# receives the resulting checkpointer as a parameter instead of opening its
+# own connection.
+_checkpointer_pool: Optional[AsyncConnectionPool] = None
+
+
+async def open_checkpointer_pool(min_size: int = 1, max_size: int = 10) -> AsyncPostgresSaver:
+    """
+    Create ONE async connection pool for the checkpointer, for the lifetime
+    of the process, and wrap it in an AsyncPostgresSaver. Call once from
+    app.py's lifespan startup; pass the returned checkpointer into process_jd
+    / resume_with_paste instead of letting them open their own connection.
+    """
+    global _checkpointer_pool
+    _checkpointer_pool = AsyncConnectionPool(
+        DB_URI,
+        min_size=min_size,
+        max_size=max_size,
+        open=False,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+    )
+    await _checkpointer_pool.open()
+    return AsyncPostgresSaver(conn=_checkpointer_pool, serde=serde)
+
+
+async def close_checkpointer_pool():
+    """Call once from app.py's lifespan shutdown to close the pool cleanly."""
+    global _checkpointer_pool
+    if _checkpointer_pool is not None:
+        await _checkpointer_pool.close()
+        _checkpointer_pool = None
+
+
+def persist_refined_jd(store: BaseStore, user_id: str, job_id: str, refined_jd: RefinedJD):
+    """Save a refined JD to the given store, keyed by job_id, so it can be fetched later without re-scraping."""
+    store.put(("user", user_id, "refined_jds"), job_id, {"data": refined_jd.model_dump()})
 
 
 def get_refined_jd(store: BaseStore, user_id: str, job_id: str) -> RefinedJD:
@@ -161,37 +230,48 @@ def get_refined_jd(store: BaseStore, user_id: str, job_id: str) -> RefinedJD:
     return RefinedJD.model_validate(result.value["data"])
 
 
-async def process_jd(user_id: str, url: str = None, pasted_text: str = None, thread_id: str = "default") -> dict:
-    async with AsyncPostgresSaver.from_conn_string(DB_URI, serde=serde) as checkpointer:
-        graph = builder.compile(checkpointer=checkpointer)
-        config = {"configurable": {"thread_id": thread_id}}
-        result = await graph.ainvoke({"url": url, "pasted_text": pasted_text}, config)
+async def process_jd(
+    checkpointer: AsyncPostgresSaver,
+    store: BaseStore,
+    user_id: str,
+    url: str = None,
+    pasted_text: str = None,
+    thread_id: str = "default",
+) -> dict:
+    graph = builder.compile(checkpointer=checkpointer)
+    config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+    result = await graph.ainvoke({"url": url, "pasted_text": pasted_text}, config)
 
-        if result.get("__interrupt__"):
-            interrupt_data = result["__interrupt__"][0].value
-            return {"status": "needs_paste", "message": interrupt_data.get("message"), "thread_id": thread_id}
+    if result.get("__interrupt__"):
+        interrupt_data = result["__interrupt__"][0].value
+        return {"status": "needs_paste", "message": interrupt_data.get("message"), "thread_id": thread_id}
 
-        refined_jd = result["refined_jd"]
-        persist_refined_jd(user_id=user_id, job_id=thread_id, refined_jd=refined_jd)
+    refined_jd = result["refined_jd"]
+    persist_refined_jd(store, user_id=user_id, job_id=thread_id, refined_jd=refined_jd)
 
-        return {
-            "status": "done",
-            "jd_text": result["jd_text"],
-            "refined_jd": refined_jd
-        }
+    return {
+        "status": "done",
+        "jd_text": result["jd_text"],
+        "refined_jd": refined_jd
+    }
 
 
-async def resume_with_paste(user_id: str, pasted_text: str, thread_id: str = "default") -> dict:
-    async with AsyncPostgresSaver.from_conn_string(DB_URI, serde=serde) as checkpointer:
-        graph = builder.compile(checkpointer=checkpointer)
-        config = {"configurable": {"thread_id": thread_id}}
-        result = await graph.ainvoke(Command(resume=pasted_text), config)
+async def resume_with_paste(
+    checkpointer: AsyncPostgresSaver,
+    store: BaseStore,
+    user_id: str,
+    pasted_text: str,
+    thread_id: str = "default",
+) -> dict:
+    graph = builder.compile(checkpointer=checkpointer)
+    config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+    result = await graph.ainvoke(Command(resume=pasted_text), config)
 
-        refined_jd = result["refined_jd"]
-        persist_refined_jd(user_id=user_id, job_id=thread_id, refined_jd=refined_jd)
+    refined_jd = result["refined_jd"]
+    persist_refined_jd(store, user_id=user_id, job_id=thread_id, refined_jd=refined_jd)
 
-        return {
-            "status": "done",
-            "jd_text": result["jd_text"],
-            "refined_jd": refined_jd
-        }
+    return {
+        "status": "done",
+        "jd_text": result["jd_text"],
+        "refined_jd": refined_jd
+    }

@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 from langgraph.store.base import BaseStore
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
-from langgraph.store.postgres import PostgresStore
 from langchain_core.output_parsers import PydanticOutputParser
 from pypdf import PdfReader
 from docx import Document
@@ -20,6 +19,7 @@ from docx.oxml.ns import qn
 from pathlib import Path
 from schemas import Details, Experience, Project, ResumeFact
 from system_prompts import SYSTEM_PROMPT_FOR_RESUME_EXTRACTION
+from usage_tracking import log_llm_usage
 
 load_dotenv()
 llm = ChatOpenAI(
@@ -127,6 +127,7 @@ def resume_extraction(state: ResumeState, config: RunnableConfig, *, store: Base
     )
 
     output = llm.invoke(prompt)
+    log_llm_usage(user_id=user_id, endpoint="resume_upload", node_name="resume_extraction", ai_message=output)
     facts: ResumeFact = resume_extraction_parser.parse(output.content)
 
     ns = ("user", user_id, "resume_facts")
@@ -143,17 +144,20 @@ builder.add_edge('extract_resume', END)
 
 DB_URI = getenv("DB_URI")
 
-def process_resume(file_path: str, user_id: str) -> str:
+def process_resume(file_path: str, user_id: str, store: BaseStore) -> str:
+    """
+    `store` is the single pooled PostgresStore created once at app startup
+    and injected by the caller (see app.py's `get_store` dependency) — this
+    function no longer opens its own Postgres connection per call.
+    """
     resume_text = extract_resume_text(file_path)
     links = extract_links(file_path)
 
     if links:
         resume_text += "\n\nPROFILE LINKS:\n" + "\n".join(links)
 
-    with PostgresStore.from_conn_string(DB_URI) as store:
-        store.setup()
-        graph = builder.compile(store=store)
-        config = {"configurable": {"user_id": user_id}}
-        out = graph.invoke({"resume_text": resume_text}, config)
+    graph = builder.compile(store=store)
+    config = {"configurable": {"user_id": user_id}}
+    out = graph.invoke({"resume_text": resume_text}, config)
 
     return out["resume_facts"].model_dump_json(indent=2)

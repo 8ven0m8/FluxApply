@@ -24,7 +24,7 @@ class RefinedJD(BaseModel):
     company_summary: str | None = Field(default=None, description="Brief description of what the company does, in the posting's own words, condensed.")
     requirements: list[JDRequirement] = Field(default_factory=list, description="All must-haves, nice-to-haves, responsibilities, and culture-fit statements extracted as individual items.")
     tech_stack: list[str] = Field(default_factory=list, description="All explicitly named technologies, languages, frameworks, or tools mentioned as part of the role or stack.")
-    application_method: str = Field(description="'platform' if applied directly through the site the JD was scraped from, 'external_form' if the posting redirects elsewhere to apply, 'unclear' if not stated.")
+    application_method: str = Field(default="unclear", description="'platform' if applied directly through the site the JD was scraped from, 'external_form' if the posting redirects elsewhere to apply, 'unclear' if not stated.")
     external_application_url: str | None = Field(default=None, description="The URL to apply externally, only present if application_method is 'external_form'.")
 
 #################### Resume extractor schemas ###################

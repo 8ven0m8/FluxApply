@@ -11,10 +11,20 @@ import {
   generate,
   getResumeStatus,
   listApplications,
+  getResumeContent,
+  getCoverLetterContent,
+  updateApplicationStatus,
+  getSubscriptionStatus,
+  SubscriptionStatus,
   RefinedJD,
   GenerateResponse,
   ApplicationSummary,
+  ApplicationStatus,
+  APPLICATION_STATUSES,
 } from "@/lib/api";
+import DocumentEditor from "./DocumentEditor";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 type Step = 1 | 2 | 3 | 4;
 
@@ -25,24 +35,16 @@ const STEP_LABELS: Record<Step, string> = {
   4: "Generate",
 };
 
-// Step 4's info card only ever needs these three fields, whether the JD
-// just came back from /jd/submit (a full RefinedJD) or was picked from the
-// sidebar (a lighter ApplicationSummary) — so it's typed against the
-// smallest shape both sources actually satisfy.
+const STATUS_TEXT_CLASS: Record<ApplicationStatus, string> = {
+  not_applied: "text-ink/50",
+  applied: "text-accentDark",
+  interviewing: "text-accentDark",
+  offer: "text-accentDark font-medium",
+  rejected: "text-rust",
+};
+
 type JDDisplayInfo = Pick<RefinedJD, "role_title" | "company" | "location">;
 
-// The NextAuth session survives a refresh (it's a cookie), but the wizard's
-// own progress — step/jdId/refinedJD/result/the JD text — used to live only
-// in useState, so reloading the tab always bounced back to step 1 even
-// though the user was still signed in. That read as "it logs me out."
-//
-// This is read via useState's lazy initializer (below), NOT a useEffect.
-// An effect-based restore was tried first and had a race: the "restore"
-// effect and the "persist on change" effect both fire on the same initial
-// commit, and the persist effect — still closured over the pre-restore
-// default values — would immediately overwrite the just-restored value
-// back to the default. Reading synchronously during first render sidesteps
-// that entirely; there's no window where a stale value can stomp it.
 const WIZARD_STORAGE_KEY = "fluxapply-wizard-state";
 
 type WizardStorageShape = Partial<{
@@ -68,6 +70,7 @@ function readWizardStorage(): WizardStorageShape {
 
 export default function Home() {
   const { data: session, status: sessionStatus } = useSession();
+  const router = useRouter();
   const [step, setStep] = useState<Step>(1);
   const [error, setError] = useState<string | null>(null);
 
@@ -75,8 +78,6 @@ export default function Home() {
   const [userId, setUserId] = useState<string | null>(null);
   const [loadingUser, setLoadingUser] = useState(false);
 
-  // Resume state — fetched once per session so returning users aren't
-  // asked to re-upload every time. `null` = not checked yet.
   const [hasResume, setHasResume] = useState<boolean | null>(null);
   const [updatingResume, setUpdatingResume] = useState(false);
   const [previousStep, setPreviousStep] = useState<Step>(3);
@@ -103,9 +104,10 @@ export default function Home() {
   const [loadingApplications, setLoadingApplications] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
-  // Dark mode — actual class is applied synchronously by the blocking
-  // script in layout.tsx (avoids a flash of the wrong theme); this state
-  // just mirrors it so the toggle button's icon renders correctly.
+  // Subscription
+  const [subscription, setSubscription] = useState<SubscriptionStatus | null>(null);
+
+  // Dark mode
   const [isDark, setIsDark] = useState(false);
   useEffect(() => {
     setIsDark(document.documentElement.classList.contains("dark"));
@@ -129,34 +131,12 @@ export default function Home() {
     return "Something went wrong. Check that the backend is running.";
   }
 
-  // If the background id_token refresh (see lib/auth.ts) ever fails —
-  // no refresh_token on an old session, or Google revoked access — every
-  // backend call would otherwise start silently 401ing (which is exactly
-  // what made application history "disappear" before this was added).
-  // Send the user straight back through Google sign-in instead.
   useEffect(() => {
     if (session?.error === "RefreshFailed" || session?.error === "NoRefreshToken") {
       signIn("google");
     }
   }, [session?.error]);
 
-  // The NextAuth session survives a refresh (it's a cookie), but the
-  // wizard's own progress didn't used to. Restoring it can't happen during
-  // the initial render anymore (that render has to match the server's
-  // markup exactly, and the server never sees sessionStorage — reading it
-  // in a useState lazy initializer caused text/attribute hydration
-  // mismatches, e.g. a step badge rendering "1" on the server and "✓" on
-  // the client). So both state and html.className now start identical on
-  // server and client, and this effect restores the real values once,
-  // after mount.
-  //
-  // skipNextPersist guards the persist effect below from the original
-  // race: the persist effect also runs on mount, in the same commit as
-  // this one, before these setState calls have actually taken effect —
-  // so its first run would just re-persist the pre-restore defaults,
-  // stomping on the very values being restored. Skipping that first run
-  // means persisting only starts once the restored state has landed and
-  // an actual change fires the effect again.
   const skipNextPersist = useRef(true);
   useEffect(() => {
     const saved = readWizardStorage();
@@ -170,11 +150,6 @@ export default function Home() {
     if (saved.pasteMessage !== undefined) setPasteMessage(saved.pasteMessage);
   }, []);
 
-  // This effect's only job is to keep sessionStorage in sync as the
-  // wizard progresses. sessionStorage (not localStorage) is deliberate:
-  // it clears itself when the tab actually closes, so a shared/public
-  // machine doesn't leak a stale JD or resume into the next person's tab,
-  // while still surviving an in-tab refresh.
   useEffect(() => {
     if (skipNextPersist.current) {
       skipNextPersist.current = false;
@@ -234,18 +209,31 @@ export default function Home() {
       .finally(() => setLoadingUser(false));
   }, [sessionStatus, session?.idToken, userId]);
 
-  // Once identified, check whether a resume is already on file and load
-  // the sidebar's application history — both one-time, right after login.
+  // Once identified, check whether a resume is already on file, load
+  // the sidebar's application history, and fetch subscription status.
   useEffect(() => {
     if (!session?.idToken || !userId) return;
     getResumeStatus(session.idToken)
       .then((res) => setHasResume(res.has_resume))
       .catch((e) => {
         console.error("Failed to check resume status:", e);
-        setHasResume(false); // fail open to the upload step rather than getting stuck
+        setHasResume(false);
       });
     refreshApplications(session.idToken);
+
+    getSubscriptionStatus(session.idToken)
+      .then(setSubscription)
+      .catch(() => setSubscription(null));
   }, [session?.idToken, userId]);
+
+  // Helper to redirect to subscription page if not active
+  function ensureSubscription(): boolean {
+    if (!subscription?.active) {
+      router.push("/subscription");
+      return false;
+    }
+    return true;
+  }
 
   async function handleUploadResume() {
     setError(null);
@@ -253,6 +241,8 @@ export default function Home() {
       setError("Choose a .pdf or .docx resume to continue.");
       return;
     }
+    if (!ensureSubscription()) return;
+
     setUploadingResume(true);
     try {
       await uploadResume(session.idToken, file);
@@ -273,6 +263,7 @@ export default function Home() {
   async function handleSubmitJD() {
     setError(null);
     if (!session?.idToken) return;
+    if (!ensureSubscription()) return;
     if (!jdUrl.trim() && !jdPasteText.trim()) {
       setError("Paste a job posting URL, or paste the job description text.");
       return;
@@ -291,7 +282,7 @@ export default function Home() {
         setRefinedJD(JSON.parse(res.refined_jd));
         setNeedsPaste(false);
         setStep(4);
-        refreshApplications(session.idToken); // new entry is already persisted server-side
+        refreshApplications(session.idToken);
       }
     } catch (e) {
       setError(describeError(e));
@@ -303,6 +294,7 @@ export default function Home() {
   async function handleResumePaste() {
     setError(null);
     if (!session?.idToken || !jdId) return;
+    if (!ensureSubscription()) return;
     if (!jdPasteText.trim()) {
       setError("Paste the job description text to continue.");
       return;
@@ -326,11 +318,12 @@ export default function Home() {
   async function handleGenerate() {
     setError(null);
     if (!session?.idToken || !jdId) return;
+    if (!ensureSubscription()) return;
     setGenerating(true);
     try {
       const res = await generate(session.idToken, jdId);
       setResult(res);
-      refreshApplications(session.idToken); // picks up the new download links
+      refreshApplications(session.idToken);
     } catch (e) {
       setError(describeError(e));
     } finally {
@@ -350,23 +343,39 @@ export default function Home() {
     setStep(3);
   }
 
-  function handleSelectApplication(app: ApplicationSummary) {
+  async function handleSelectApplication(app: ApplicationSummary) {
     setError(null);
     setJdId(app.jd_id);
     setRefinedJD({ role_title: app.role_title, company: app.company, location: app.location ?? null });
-    if (app.resume_docx_url && app.cover_letter_docx_url) {
+    if (app.resume_docx_url && app.cover_letter_docx_url && session?.idToken) {
+      const token = session.idToken;
+      const [resumeContent, coverLetterContent] = await Promise.all([
+        getResumeContent(token, app.jd_id).catch(() => null),
+        getCoverLetterContent(token, app.jd_id).catch(() => null),
+      ]);
       setResult({
-        tailored_resume: "",
+        tailored_resume: resumeContent?.tailored_resume ?? "",
         resume_docx_url: app.resume_docx_url,
-        cover_letter: "",
+        cover_letter: coverLetterContent?.cover_letter ?? "",
         cover_letter_docx_url: app.cover_letter_docx_url,
       });
     } else {
-      // Files expired (lifecycle rule) or were never generated — the
-      // Generate button on step 4 will happily regenerate them.
       setResult(null);
     }
     setStep(4);
+  }
+
+  async function handleStatusChange(jdIdToUpdate: string, status: ApplicationStatus) {
+    if (!session?.idToken) return;
+    setApplications((prev) =>
+      prev.map((a) => (a.jd_id === jdIdToUpdate ? { ...a, status } : a))
+    );
+    try {
+      await updateApplicationStatus(session.idToken, jdIdToUpdate, status);
+    } catch (e) {
+      setError(describeError(e));
+      refreshApplications(session.idToken);
+    }
   }
 
   function handleUpdateResumeClick() {
@@ -404,7 +413,7 @@ export default function Home() {
         <aside
           className={`${
             mobileSidebarOpen ? "fixed inset-0 z-50 flex" : "hidden"
-          } w-full flex-col bg-paper px-6 py-8 md:static md:z-auto md:flex md:w-64 md:shrink-0 md:border-r md:border-line md:px-4 md:py-14`}
+          } w-full flex-col bg-paper px-6 py-8 md:sticky md:top-0 md:z-auto md:flex md:h-screen md:w-64 md:shrink-0 md:border-r md:border-line md:px-4 md:py-14`}
         >
           <div className="mb-4 flex items-center justify-between">
             <p className="font-mono text-xs uppercase tracking-[0.15em] text-ink/40">
@@ -437,26 +446,47 @@ export default function Home() {
               <p className="px-1 text-xs text-ink/40">No applications yet.</p>
             ) : (
               applications.map((app) => (
-                <button
+                <div
                   key={app.jd_id}
-                  onClick={() => {
-                    handleSelectApplication(app);
-                    closeMobileSidebar();
-                  }}
                   className={`w-full rounded px-3 py-2 text-left text-sm hover:bg-surface ${
                     jdId === app.jd_id ? "border border-accent/30 bg-surface" : ""
                   }`}
                 >
-                  <p className="truncate font-medium">{app.company}</p>
-                  <p className="truncate text-xs text-ink/50">{app.role_title}</p>
-                  <p className="mt-0.5 text-[10px] uppercase tracking-wide text-ink/40">
-                    {app.resume_docx_url && app.cover_letter_docx_url ? "Ready" : "Not generated"}
-                  </p>
-                </button>
+                  <button
+                    onClick={() => {
+                      handleSelectApplication(app);
+                      closeMobileSidebar();
+                    }}
+                    className="block w-full text-left"
+                  >
+                    <p className="truncate font-medium">{app.company}</p>
+                    <p className="truncate text-xs text-ink/50">{app.role_title}</p>
+                    <p className="mt-0.5 text-[10px] uppercase tracking-wide text-ink/40">
+                      {app.resume_docx_url && app.cover_letter_docx_url ? "Ready" : "Not generated"}
+                    </p>
+                  </button>
+                  <select
+                    value={app.status}
+                    onChange={(e) => handleStatusChange(app.jd_id, e.target.value as ApplicationStatus)}
+                    onClick={(e) => e.stopPropagation()}
+                    className={`focus-ring mt-2 w-full rounded border border-line bg-paper px-2 py-1 text-[11px] ${STATUS_TEXT_CLASS[app.status]}`}
+                  >
+                    {APPLICATION_STATUSES.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               ))
             )}
           </div>
-
+          <Link
+            href="/subscription"
+            className="mt-4 block rounded border border-line px-3 py-2 text-left text-sm text-ink/70 hover:bg-surface"
+          >
+            {subscription?.active ? "View your plan" : "Buy Subscription"}
+          </Link>
           <button
             onClick={() => {
               handleUpdateResumeClick();
@@ -466,12 +496,27 @@ export default function Home() {
           >
             Update resume
           </button>
-          <button
-            onClick={() => signOut({ callbackUrl: "/" })}
-            className="mt-2 rounded border border-line px-3 py-2 text-left text-sm text-ink/70 hover:bg-surface"
-          >
-            Log out
-          </button>
+          <div className="mt-2 flex items-center gap-2">
+            {session?.user?.image ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={session.user.image}
+                alt=""
+                referrerPolicy="no-referrer"
+                className="h-8 w-8 shrink-0 rounded-full border border-line object-cover"
+              />
+            ) : (
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-line bg-surface text-xs font-medium text-ink/50">
+                {session?.user?.email?.[0]?.toUpperCase() ?? "?"}
+              </div>
+            )}
+            <button
+              onClick={() => signOut({ callbackUrl: "/" })}
+              className="flex-1 rounded border border-line px-3 py-2 text-left text-sm text-ink/70 hover:bg-surface"
+            >
+              Log out
+            </button>
+          </div>
         </aside>
       )}
 
@@ -568,7 +613,10 @@ export default function Home() {
                   </p>
                 )}
                 <button
-                  onClick={() => setStep(hasResume ? 3 : 2)}
+                  onClick={() => {
+                    if (!ensureSubscription()) return;
+                    setStep(hasResume ? 3 : 2);
+                  }}
                   disabled={loadingUser || !userId || hasResume === null}
                   className="rounded bg-accent px-4 py-2 text-sm font-medium text-paper hover:bg-accentDark disabled:opacity-50"
                 >
@@ -718,12 +766,27 @@ export default function Home() {
         {step === 4 && (
           <section className="space-y-6">
             {refinedJD && (
-              <div className="rounded border border-line bg-surface px-4 py-3">
-                <p className="font-display text-lg">{refinedJD.role_title}</p>
-                <p className="text-sm text-ink/60">
-                  {refinedJD.company}
-                  {refinedJD.location ? ` · ${refinedJD.location}` : ""}
-                </p>
+              <div className="flex items-center justify-between gap-3 rounded border border-line bg-surface px-4 py-3">
+                <div>
+                  <p className="font-display text-lg">{refinedJD.role_title}</p>
+                  <p className="text-sm text-ink/60">
+                    {refinedJD.company}
+                    {refinedJD.location ? ` · ${refinedJD.location}` : ""}
+                  </p>
+                </div>
+                {jdId && (
+                  <select
+                    value={applications.find((a) => a.jd_id === jdId)?.status ?? "not_applied"}
+                    onChange={(e) => handleStatusChange(jdId, e.target.value as ApplicationStatus)}
+                    className="focus-ring shrink-0 rounded border border-line bg-paper px-2 py-1.5 text-xs"
+                  >
+                    {APPLICATION_STATUSES.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
             )}
 
@@ -738,25 +801,46 @@ export default function Home() {
                   : "Generate resume and cover letter"}
               </button>
             ) : (
-              <div className="space-y-3">
-                <a
-                  href={result.resume_docx_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center justify-between rounded border border-line bg-surface px-4 py-3 text-sm hover:border-accent"
-                >
-                  <span>Tailored resume (.docx)</span>
-                  <span className="text-accentDark">Download →</span>
-                </a>
-                <a
-                  href={result.cover_letter_docx_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center justify-between rounded border border-line bg-surface px-4 py-3 text-sm hover:border-accent"
-                >
-                  <span>Cover letter (.docx)</span>
-                  <span className="text-accentDark">Download →</span>
-                </a>
+              <div className="space-y-5">
+                <div className="space-y-3">
+                  <a
+                    href={result.resume_docx_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-between rounded border border-line bg-surface px-4 py-3 text-sm hover:border-accent"
+                  >
+                    <span>Tailored resume (.docx)</span>
+                    <span className="text-accentDark">Download →</span>
+                  </a>
+                  <a
+                    href={result.cover_letter_docx_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-between rounded border border-line bg-surface px-4 py-3 text-sm hover:border-accent"
+                  >
+                    <span>Cover letter (.docx)</span>
+                    <span className="text-accentDark">Download →</span>
+                  </a>
+                </div>
+
+                {jdId && session?.idToken && (
+                  <div className="rounded border border-line p-4">
+                    <p className="mb-4 font-mono text-xs uppercase tracking-[0.15em] text-ink/40">
+                      Edit before you send it
+                    </p>
+                    <DocumentEditor
+                      token={session.idToken}
+                      jdId={jdId}
+                      initialResumeJson={result.tailored_resume}
+                      initialCoverLetterJson={result.cover_letter}
+                      resumeDocxUrl={result.resume_docx_url}
+                      coverLetterDocxUrl={result.cover_letter_docx_url}
+                      onUrlsUpdated={(urls) =>
+                        setResult((prev) => (prev ? { ...prev, ...urls } : prev))
+                      }
+                    />
+                  </div>
+                )}
               </div>
             )}
           </section>

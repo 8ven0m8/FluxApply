@@ -55,6 +55,84 @@ export interface GenerateResponse {
   cover_letter_docx_url: string;
 }
 
+// --- Editable document shapes (mirror backend/schemas.py exactly) ---
+
+export interface ResumeDetails {
+  full_name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  profile_urls: string[];
+  reference_urls: string[];
+  institutions: string[];
+  education: string[];
+}
+
+export interface ResumeExperience {
+  company?: string | null;
+  role?: string | null;
+  dates?: string | null;
+  description?: string | null;
+}
+
+export interface ResumeProject {
+  title: string;
+  description?: string | null;
+  technologies: string[];
+}
+
+export interface TailoredResumeContent {
+  summary: string;
+  details: ResumeDetails;
+  skills: string[];
+  projects: ResumeProject[];
+  experience: ResumeExperience[];
+  achievements: string[];
+}
+
+export interface CoverLetterHeader {
+  full_name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  date: string;
+}
+
+export interface CoverLetterEmployer {
+  hiring_manager_name?: string | null;
+  hiring_manager_title?: string | null;
+  company_name?: string | null;
+  company_address?: string | null;
+}
+
+export interface CoverLetterBodyParagraph {
+  content: string;
+}
+
+export interface CoverLetter {
+  header: CoverLetterHeader;
+  employers_info: CoverLetterEmployer;
+  // These two field names match backend/schemas.py exactly (including the
+  // slightly odd naming) — `ation` is the salutation ("Dear ..."),
+  // `openingsalut_paragraph` is the opening paragraph.
+  ation: string;
+  openingsalut_paragraph: string;
+  body_paragraphs: CoverLetterBodyParagraph[];
+  closing_paragraph: string;
+  sign_off: string;
+  signature_name?: string | null;
+}
+
+export type ApplicationStatus = "not_applied" | "applied" | "interviewing" | "offer" | "rejected";
+
+export const APPLICATION_STATUSES: { value: ApplicationStatus; label: string }[] = [
+  { value: "not_applied", label: "Not applied" },
+  { value: "applied", label: "Applied" },
+  { value: "interviewing", label: "Interviewing" },
+  { value: "offer", label: "Offer" },
+  { value: "rejected", label: "Rejected" },
+];
+
 export interface ApplicationSummary {
   jd_id: string;
   role_title: string;
@@ -62,6 +140,7 @@ export interface ApplicationSummary {
   location?: string | null;
   resume_docx_url?: string | null;
   cover_letter_docx_url?: string | null;
+  status: ApplicationStatus;
 }
 
 /**
@@ -147,6 +226,121 @@ export async function listApplications(
 ): Promise<ApplicationSummary[]> {
   const res = await fetch(`${API_BASE}/applications`, {
     method: "GET",
+    headers: authHeaders(token),
+  });
+  return handle(res);
+}
+
+export async function updateApplicationStatus(
+  token: string,
+  jdId: string,
+  status: ApplicationStatus
+): Promise<{ jd_id: string; status: ApplicationStatus }> {
+  const res = await fetch(`${API_BASE}/applications/${jdId}/status`, {
+    method: "PUT",
+    headers: { ...authHeaders(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+  return handle(res);
+}
+
+/**
+ * Fetches the already-generated resume content for a past application
+ * (no LLM call — reads what's already stored) so the editor can open it
+ * without going through /generate again.
+ */
+export async function getResumeContent(
+  token: string,
+  jdId: string
+): Promise<{ tailored_resume: string }> {
+  const res = await fetch(`${API_BASE}/resume/${jdId}/content`, {
+    method: "GET",
+    headers: authHeaders(token),
+  });
+  return handle(res);
+}
+
+export async function getCoverLetterContent(
+  token: string,
+  jdId: string
+): Promise<{ cover_letter: string }> {
+  const res = await fetch(`${API_BASE}/cover-letter/${jdId}/content`, {
+    method: "GET",
+    headers: authHeaders(token),
+  });
+  return handle(res);
+}
+
+/**
+ * Re-renders the resume .docx from edited content. No LLM call — this
+ * re-runs the same deterministic docx-formatting step /generate uses,
+ * just on whatever content the user submits, and persists the edit.
+ */
+export async function renderResume(
+  token: string,
+  jdId: string,
+  content: TailoredResumeContent
+): Promise<{ tailored_resume: string; resume_docx_url: string }> {
+  const res = await fetch(`${API_BASE}/resume/${jdId}/render`, {
+    method: "PUT",
+    headers: { ...authHeaders(token), "Content-Type": "application/json" },
+    body: JSON.stringify(content),
+  });
+  return handle(res);
+}
+
+export async function renderCoverLetter(
+  token: string,
+  jdId: string,
+  content: CoverLetter
+): Promise<{ cover_letter: string; cover_letter_docx_url: string; page_count: number }> {
+  const res = await fetch(`${API_BASE}/cover-letter/${jdId}/render`, {
+    method: "PUT",
+    headers: { ...authHeaders(token), "Content-Type": "application/json" },
+    body: JSON.stringify(content),
+  });
+  return handle(res);
+}
+
+export interface SubscriptionStatus {
+  active: boolean;
+  expires_at: string | null;
+  razorpay_subscription_id: string | null;
+  razorpay_customer_id: string | null;
+  plan_id: string | null;
+  // True once cancellation has been scheduled but the current paid period
+  // hasn't ended yet — access stays on, it just won't renew.
+  cancel_at_period_end: boolean;
+}
+
+export async function getSubscriptionStatus(token: string): Promise<SubscriptionStatus> {
+  const res = await fetch(`${API_BASE}/subscription/status`, {
+    headers: authHeaders(token),
+  });
+  return handle(res);
+}
+
+export async function createRazorpaySubscription(
+  token: string,
+  successUrl: string,
+  cancelUrl: string
+): Promise<{ subscription_id: string; key_id: string }> {
+  const res = await fetch(`${API_BASE}/subscription/create`, {
+    method: "POST",
+    headers: { ...authHeaders(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ success_url: successUrl, cancel_url: cancelUrl }),
+  });
+  return handle(res);
+}
+
+// Schedules cancellation at the end of the current billing period — access
+// stays on and the response reflects that immediately (the backend updates
+// this synchronously, it doesn't wait on a webhook), so no polling needed.
+export async function cancelRazorpaySubscription(
+  token: string
+): Promise<SubscriptionStatus> {
+  const res = await fetch(`${API_BASE}/subscription/cancel`, {
+    method: "POST",
     headers: authHeaders(token),
   });
   return handle(res);

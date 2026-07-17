@@ -79,6 +79,18 @@ export const authOptions: NextAuthOptions = {
       },
     }),
   ],
+  // Without this, any OAuth error — most commonly the user hitting
+  // "Cancel" on Google's account chooser — lands on one of NextAuth's own
+  // bare, unstyled built-in pages instead of the app. Which page depends
+  // on the error type: some (e.g. AccessDenied) go to `error`, others
+  // (e.g. "Callback", which covers OAuth callback failures) go to
+  // `signIn` with an ?error= query param — so both need to point back at
+  // the app. page.tsx doesn't care about that query param, it just shows
+  // the normal step-1 sign-in screen, so nothing else is needed there.
+  pages: {
+    signIn: "/",
+    error: "/",
+  },
   session: {
     strategy: "jwt",
   },

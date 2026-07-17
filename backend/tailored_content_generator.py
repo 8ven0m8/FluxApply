@@ -1,4 +1,3 @@
-from langgraph.store.postgres import PostgresStore
 from schemas import ResumeFact, TailoredResumeContent, CoverLetter
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import PydanticOutputParser
@@ -20,6 +19,7 @@ import boto3
 import tempfile
 from botocore.exceptions import ClientError
 from s3_utils import generate_presigned_url, s3_uri_to_key, upload_bytes_to_s3, download_original_resume_bytes
+from usage_tracking import log_llm_usage
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -51,6 +51,8 @@ def invoke_and_parse_with_retry(
     *,
     max_attempts: int = 3,
     node_name: str = "unknown_node",
+    user_id: str = "unknown",
+    endpoint: str = "generate",
 ) -> T:
     """
     Calls llm.invoke(messages) and parses the response with `parser`,
@@ -59,12 +61,17 @@ def invoke_and_parse_with_retry(
 
     `messages` can be either a raw prompt string or a list of
     {"role": ..., "content": ...} dicts — whatever `llm.invoke` accepts.
+
+    Every attempt (including failed/retried ones) is logged via
+    log_llm_usage — a retry still costs real tokens, so it should still
+    count toward the user's usage.
     """
     last_error: Optional[Exception] = None
 
     for attempt in range(1, max_attempts + 1):
         try:
             response = llm.invoke(messages)
+            log_llm_usage(user_id=user_id, endpoint=endpoint, node_name=node_name, ai_message=response)
             parsed = parser.parse(response.content)
             return parsed
         except Exception as e:
@@ -152,6 +159,8 @@ def tailor_resume_node(state: TailoredResumeState, config: RunnableConfig, *, st
         prompt,
         tailor_resume_parser,
         node_name="tailor_resume_node",
+        user_id=user_id,
+        endpoint="generate",
     )
 
     store.put(
@@ -202,6 +211,8 @@ def generate_coverletter_node(state: TailoredResumeState, config: RunnableConfig
         prompt,
         cover_letter_parser,
         node_name="generate_coverletter_node",
+        user_id=user_id,
+        endpoint="generate",
     )
 
     store.put(
@@ -265,6 +276,8 @@ def shorten_coverletter_node(state: TailoredResumeState, config: RunnableConfig,
         messages,
         cover_letter_parser,
         node_name="shorten_coverletter_node",
+        user_id=user_id,
+        endpoint="generate",
     )
     shortened_dict = shortened.model_dump()
 
@@ -312,17 +325,20 @@ builder.add_conditional_edges(
 builder.add_edge("shorten_cover_letter", "generate_cover_letter")
 
 # main function
-def generate_tailored_resume(user_id: str, jd_id: str) -> dict:
-    with PostgresStore.from_conn_string(DB_URI) as store:
-        store.setup()
-        graph = builder.compile(store=store)
-        config = {"configurable": {"user_id": user_id, "jd_id": jd_id}}
-        try:
-            out = graph.invoke({}, config)
-        except InputValidationError as e:
-            logger.error("Input validation failed: %s", e)
-            raise
-        print("GENERATED SUCCESSFULLY")
+def generate_tailored_resume(user_id: str, jd_id: str, store: BaseStore) -> dict:
+    """
+    `store` is the single pooled PostgresStore created once at app startup
+    and injected by the caller (see app.py's `get_store` dependency) —
+    this function no longer opens its own Postgres connection per call.
+    """
+    graph = builder.compile(store=store)
+    config = {"configurable": {"user_id": user_id, "jd_id": jd_id}}
+    try:
+        out = graph.invoke({}, config)
+    except InputValidationError as e:
+        logger.error("Input validation failed: %s", e)
+        raise
+    print("GENERATED SUCCESSFULLY")
 
     resume_key = s3_uri_to_key(out["resume_docx_path"])
     cover_letter_key = s3_uri_to_key(out["cover_letter_docx_path"])
