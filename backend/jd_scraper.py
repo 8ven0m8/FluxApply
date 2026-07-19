@@ -36,9 +36,9 @@ serde = JsonPlusSerializer(allowed_msgpack_modules=[("schemas", "RefinedJD")])
 load_dotenv()
 
 llm = ChatOpenAI(
-    base_url=getenv("FREELLMAPI_URL"),
-    api_key=getenv("FREELLMAPI_KEY"),
-    model="auto" 
+    # base_url=getenv("FREELLMAPI_URL"),
+    api_key=getenv("OPENAI_KEY"),
+    model="gpt-4o-mini"
 )
 
 DB_URI = getenv("DB_URI")

@@ -27,9 +27,9 @@ logger = logging.getLogger(__name__)
 DB_URI=getenv("DB_URI")
 
 llm = ChatOpenAI(
-    base_url=getenv("FREELLMAPI_URL"),
-    api_key=getenv("FREELLMAPI_KEY"),
-    model="auto"
+    # base_url=getenv("FREELLMAPI_URL"),
+    api_key=getenv("OPENAI_KEY"),
+    model="gpt-4o-mini"
 )
 
 ########### Error handling helper functions ###########
