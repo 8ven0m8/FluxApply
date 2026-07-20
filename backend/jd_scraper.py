@@ -35,11 +35,17 @@ serde = JsonPlusSerializer(allowed_msgpack_modules=[("schemas", "RefinedJD")])
 
 load_dotenv()
 
-llm = ChatOpenAI(
-    # base_url=getenv("FREELLMAPI_URL"),
-    api_key=getenv("OPENAI_KEY"),
-    model="gpt-4o-mini"
-)
+if getenv("PRODUCTION") == "true":
+    llm = ChatOpenAI(
+        api_key=getenv("OPENAI_KEY"),
+        model="gpt-4o-mini"
+    )
+else:
+    llm = ChatOpenAI(
+        base_url=getenv("FREELLMAPI_URL"),
+        api_key=getenv("FREELLMAPI_KEY"),
+        model="auto"
+    )
 
 DB_URI = getenv("DB_URI")
 BLOCKED_DOMAINS = ["linkedin.com", "indeed.com"]

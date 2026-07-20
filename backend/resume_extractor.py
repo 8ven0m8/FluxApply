@@ -22,11 +22,17 @@ from system_prompts import SYSTEM_PROMPT_FOR_RESUME_EXTRACTION
 from usage_tracking import log_llm_usage
 
 load_dotenv()
-llm = ChatOpenAI(
-    # base_url=getenv("FREELLMAPI_URL"),
-    api_key=getenv("OPENAI_KEY"),
-    model="gpt-4o-mini"
-)
+if getenv("PRODUCTION") == "true":
+    llm = ChatOpenAI(
+        api_key=getenv("OPENAI_KEY"),
+        model="gpt-4o-mini"
+    )
+else:
+    llm = ChatOpenAI(
+        base_url=getenv("FREELLMAPI_URL"),
+        api_key=getenv("FREELLMAPI_KEY"),
+        model="auto"
+    )
 
 
 ############### Extract text from pdf or doc #################

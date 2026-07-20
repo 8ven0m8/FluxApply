@@ -63,6 +63,9 @@ export default function SubscriptionContent() {
           subscription_id: subscription_id,
           name: "FluxApply",
           description: "Monthly Subscription",
+          handler: () => {
+            router.push("/subscription?success=true");
+          },
           modal: {
             ondismiss: () => {
               setSubscribing(false);
@@ -71,14 +74,19 @@ export default function SubscriptionContent() {
           theme: { color: "#3B6E5E" },
         };
         const rzp = new window.Razorpay(options);
-        rzp.open();
-        rzp.on("payment.success", (response: any) => {
-          router.push("/subscription?success=true");
-        });
-        rzp.on("payment.error", (response: any) => {
-          setError(response.error.description || "Payment failed");
+        // Real Razorpay Checkout.js event is "payment.failed", not
+        // "payment.error" — the old name never fired, so failed/declined
+        // payments (e.g. a rejected autopay mandate) silently left the
+        // button stuck on "Starting payment…" with no error shown.
+        rzp.on("payment.failed", (response: any) => {
+          setError(response.error?.description || "Payment failed");
           setSubscribing(false);
         });
+        rzp.open();
+      };
+      script.onerror = () => {
+        setError("Couldn't load the Razorpay checkout script. Check your connection and try again.");
+        setSubscribing(false);
       };
       document.body.appendChild(script);
     } catch (e) {
