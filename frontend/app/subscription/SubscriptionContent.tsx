@@ -22,27 +22,71 @@ export default function SubscriptionContent() {
   const [subscribing, setSubscribing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
 
-  const razorpayPaymentId = searchParams.get("razorpay_payment_id");
-  const razorpaySignature = searchParams.get("razorpay_signature");
-  const razorpaySubscriptionId = searchParams.get("razorpay_subscription_id");
+  const justCheckedOut = searchParams.get("success") === "true";
 
   useEffect(() => {
     if (status === "unauthenticated") {
       router.push("/");
       return;
     }
-    if (status === "authenticated" && session?.idToken) {
-      getSubscriptionStatus(session.idToken)
+    if (status !== "authenticated" || !session?.idToken) return;
+
+    let cancelled = false;
+    const token = session.idToken;
+
+    const fetchOnce = () =>
+      getSubscriptionStatus(token).then((data) => {
+        if (!cancelled) setSub(data);
+        return data;
+      });
+
+    if (!justCheckedOut) {
+      fetchOnce()
+        .catch((e) => {
+          if (!cancelled) setError(e.message || "Failed to load subscription status");
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    // Just returned from Razorpay checkout. The webhook that actually flips
+    // `active` to true can lag a few seconds behind the browser-side
+    // "payment succeeded" callback, so poll a handful of times with backoff
+    // instead of trusting a single fetch right after redirect.
+    const delaysMs = [1000, 2000, 3000, 4000, 5000];
+    let attempt = 0;
+
+    const poll = () => {
+      fetchOnce()
         .then((data) => {
-          setSub(data);
-          setLoading(false);
+          if (cancelled) return;
+          if (data.active || attempt >= delaysMs.length) {
+            setLoading(false);
+            // Strip ?success=true so a manual refresh doesn't re-poll.
+            router.replace("/subscription");
+            return;
+          }
+          const delay = delaysMs[attempt];
+          attempt += 1;
+          setTimeout(poll, delay);
         })
         .catch((e) => {
-          setError(e.message || "Failed to load subscription status");
-          setLoading(false);
+          if (!cancelled) {
+            setError(e.message || "Failed to load subscription status");
+            setLoading(false);
+          }
         });
-    }
-  }, [status, session, router, razorpayPaymentId]);
+    };
+    poll();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [status, session, router, justCheckedOut]);
 
   const handleSubscribe = async () => {
     if (!session?.idToken) return;
@@ -120,7 +164,9 @@ export default function SubscriptionContent() {
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <p className="text-sm text-ink/50">Loading subscription…</p>
+        <p className="text-sm text-ink/50">
+          {justCheckedOut ? "Confirming your payment…" : "Loading subscription…"}
+        </p>
       </div>
     );
   }
