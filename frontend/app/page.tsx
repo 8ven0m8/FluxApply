@@ -534,8 +534,9 @@ export default function Home() {
                 </svg>
               </button>
             )}
-            <p className="font-mono text-xl uppercase tracking-[0.2em] text-accentDark">
-              FluxApply
+            <p className="flex items-center gap-2 font-mono text-xl uppercase tracking-[0.2em] text-accentDark">
+              <img src="https://fluxapply-public-assets.s3.ap-south-2.amazonaws.com/favicon.png" alt="" className="h-6 w-6 self-center" />
+              FLUXAPPLY
             </p>
             <h1 className="mt-2 font-display text-3xl">
               Generate personalized job applications in one click.
