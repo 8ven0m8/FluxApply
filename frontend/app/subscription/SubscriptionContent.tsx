@@ -130,7 +130,7 @@ export default function SubscriptionContent() {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center px-6 py-14">
       <div className="w-full max-w-md space-y-6">
-        <h1 className="font-display text-2xl">Subscription</h1>
+        <h1 className="font-display text-2xl">Get your subscription</h1>
         {error && (
           <div className="rounded border border-rust/30 bg-rust/5 px-4 py-3 text-sm text-rust">
             {error}
@@ -165,7 +165,7 @@ export default function SubscriptionContent() {
           <div className="space-y-4">
             <div className="rounded border border-line p-4">
               <p className="font-medium">Monthly Plan</p>
-              <p className="text-sm text-ink/60">Unlimited access to resume tailoring and cover letters.</p>
+              <p className="text-sm text-ink/60">Get monthly access to the FluxApply services. Generate cover letters and tailored resumes.</p>
               <p className="mt-2 text-lg font-display">₹299 / month</p>
             </div>
             <button
@@ -190,7 +190,7 @@ export default function SubscriptionContent() {
           onClick={() => router.push("/")}
           className="mt-4 text-sm text-ink/50 underline underline-offset-2 hover:text-ink"
         >
-          ← Back to app
+          ← Back to login page
         </button>
       </div>
     </div>

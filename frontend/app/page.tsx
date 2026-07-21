@@ -417,7 +417,7 @@ export default function Home() {
         >
           <div className="mb-4 flex items-center justify-between">
             <p className="font-mono text-xs uppercase tracking-[0.15em] text-ink/40">
-              Applications
+              Application History
             </p>
             <button
               onClick={closeMobileSidebar}
@@ -492,7 +492,7 @@ export default function Home() {
               handleUpdateResumeClick();
               closeMobileSidebar();
             }}
-            className="mt-4 rounded border border-line px-3 py-2 text-left text-sm text-ink/70 hover:bg-surface"
+            className="mt-2 rounded border border-line px-3 py-2 text-left text-sm text-ink/70 hover:bg-surface"
           >
             Update resume
           </button>
@@ -534,14 +534,14 @@ export default function Home() {
                 </svg>
               </button>
             )}
-            <p className="font-mono text-xs uppercase tracking-[0.2em] text-accentDark">
+            <p className="font-mono text-xl uppercase tracking-[0.2em] text-accentDark">
               FluxApply
             </p>
             <h1 className="mt-2 font-display text-3xl">
-              Tailor a resume to one job.
+              Generate personalized job applications in one click.
             </h1>
             <p className="mt-2 text-sm text-ink/60">
-              Four steps: identify yourself, upload a resume, point at a job, generate.
+              Get a tailored resume and a cover letter according to the job you apply for. All you need to do is follow these four simple steps:
             </p>
           </header>
 
@@ -581,8 +581,7 @@ export default function Home() {
             ) : sessionStatus !== "authenticated" ? (
               <>
                 <p className="text-sm text-ink/60">
-                  Sign in with Google to link your resume and generated
-                  documents to a verified email — no typing one in by hand.
+                  Sign in with Google to link your resume and save your generated documents.
                 </p>
                 <button
                   onClick={() => signIn("google")}
@@ -609,7 +608,7 @@ export default function Home() {
                 </div>
                 {hasResume && (
                   <p className="text-xs text-ink/50">
-                    Resume on file — you can update it anytime from the sidebar.
+                    Welcome back! You can update your resume anytime from the sidebar.
                   </p>
                 )}
                 <button
@@ -632,7 +631,7 @@ export default function Home() {
           <section className="space-y-4">
             <div>
               <label htmlFor="resume" className="mb-1 block text-sm font-medium">
-                {updatingResume ? "Replace your resume (.pdf or .docx)" : "Resume (.pdf or .docx)"}
+                {updatingResume ? "Replace your resume (.pdf or .docx)" : "Upload your resume (.pdf or .docx)"}
               </label>
               <input
                 id="resume"
@@ -809,7 +808,7 @@ export default function Home() {
                     rel="noreferrer"
                     className="flex items-center justify-between rounded border border-line bg-surface px-4 py-3 text-sm hover:border-accent"
                   >
-                    <span>Tailored resume (.docx)</span>
+                    <span>Tailored resume</span>
                     <span className="text-accentDark">Download →</span>
                   </a>
                   <a
@@ -818,7 +817,7 @@ export default function Home() {
                     rel="noreferrer"
                     className="flex items-center justify-between rounded border border-line bg-surface px-4 py-3 text-sm hover:border-accent"
                   >
-                    <span>Cover letter (.docx)</span>
+                    <span>Cover letter</span>
                     <span className="text-accentDark">Download →</span>
                   </a>
                 </div>
