@@ -623,6 +623,22 @@ export default function Home() {
                 </button>
               </>
             )}
+
+            {/* Demo video — shown regardless of sign-in status */}
+            <div className="mt-6">
+              <p className="mb-2 text-xl font-medium text-ink/70">Watch a demo:</p>
+              <video
+                className="w-full rounded border border-line"
+                controls
+                playsInline
+              >
+                <source
+                  src="https://fluxapply-public-assets.s3.ap-south-2.amazonaws.com/demo.mp4"
+                  type="video/mp4"
+                />
+                Your browser does not support the video tag.
+              </video>
+            </div>
           </section>
         )}
 
