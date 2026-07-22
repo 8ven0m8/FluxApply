@@ -107,6 +107,9 @@ export default function SubscriptionContent() {
           subscription_id: subscription_id,
           name: "FluxApply",
           description: "Monthly Subscription",
+          prefill: {
+            email: session.user?.email || "",
+          },
           handler: () => {
             router.push("/subscription?success=true");
           },
