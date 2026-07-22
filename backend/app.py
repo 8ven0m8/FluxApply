@@ -698,65 +698,71 @@ def create_subscription(
 ):
     user_id = generate_user_id(email)
 
-    # 0. Guard against duplicate subscriptions. Without this, a double-click,
-    # a retried request, or the user re-visiting this page after abandoning
-    # checkout each create a brand-new Razorpay subscription — and if more
-    # than one of those ever gets activated, the user is billed twice for
-    # the same plan. If they already have a live subscription, just hand
-    # back the existing one instead of creating another.
-    sub_info = get_subscription(store, user_id)
-    if sub_info.get("active") and sub_info.get("razorpay_subscription_id"):
-        expires_at = sub_info.get("expires_at")
-        still_valid = True
-        if expires_at:
-            try:
-                still_valid = datetime.fromisoformat(expires_at) >= datetime.now(timezone.utc)
-            except (ValueError, TypeError):
-                still_valid = False
-        if still_valid:
-            return CreateSubscriptionResponse(
-                subscription_id=sub_info["razorpay_subscription_id"],
-                key_id=RAZORPAY_KEY_ID,
-            )
-
-    # 1. Check if we already have a customer_id stored for this user
-    customer_id = sub_info.get("razorpay_customer_id")
-
-    # 2. If we don't have a customer_id, look one up by email before trying
-    # to create one. Previously this created-then-caught-the-error, matching
-    # on the literal string "Customer already exists" in Razorpay's error
-    # message — fragile, since that wording is Razorpay's to change, not
-    # ours to rely on. Looking up first avoids depending on error text at all.
-    if not customer_id:
+    # ---- Helper: get (or create) the Razorpay customer for this email ----
+    def get_customer_id_for_email(email: str) -> str:
+        # 1. Look up existing customer by email
         existing = client.customer.all({"email": email})
         if existing.get("count", 0) > 0:
-            customer_id = existing["items"][0]["id"]
-        else:
-            try:
-                customer = client.customer.create({
-                    "email": email,
-                    "name": email.split("@")[0],
-                    "notes": {"user_id": user_id}
-                })
-                customer_id = customer["id"]
-            except BadRequestError as e:
-                # Rare race: created elsewhere between our lookup and this
-                # call. Fall back to a lookup one more time before giving up.
-                error_msg = str(e)
-                if "Customer already exists" in error_msg:
-                    retry = client.customer.all({"email": email})
-                    if retry.get("count", 0) > 0:
-                        customer_id = retry["items"][0]["id"]
-                    else:
-                        raise HTTPException(400, "Customer exists but couldn't be retrieved.")
-                else:
-                    raise HTTPException(400, f"Razorpay customer creation failed: {e}")
+            return existing["items"][0]["id"]
+        # 2. Create a new customer
+        try:
+            customer = client.customer.create({
+                "email": email,
+                "name": email.split("@")[0],
+                "notes": {"user_id": user_id}
+            })
+            return customer["id"]
+        except BadRequestError as e:
+            # Rare race: created elsewhere between our lookup and this call.
+            # Fall back to a second lookup.
+            if "Customer already exists" in str(e):
+                retry = client.customer.all({"email": email})
+                if retry.get("count", 0) > 0:
+                    return retry["items"][0]["id"]
+            raise HTTPException(400, f"Razorpay customer creation failed: {e}")
 
-    # 3. Now create the subscription using the customer_id
+    # The CORRECT customer ID derived from the authenticated email
+    correct_customer_id = get_customer_id_for_email(email)
+
+    # ---- Check for an existing subscription, but verify its customer ----
+    sub_info = get_subscription(store, user_id)
+    existing_sub_id = sub_info.get("razorpay_subscription_id")
+
+    if sub_info.get("active") and existing_sub_id:
+        # Fetch the subscription from Razorpay to confirm its customer
+        try:
+            sub_details = client.subscription.fetch(existing_sub_id)
+            sub_customer_id = sub_details.get("customer_id")
+            # If the subscription's customer matches the correct one, we can reuse it
+            if sub_customer_id == correct_customer_id:
+                # Check that it's still valid (not expired)
+                current_end = sub_details.get("current_end")
+                if current_end:
+                    expires_at = datetime.fromtimestamp(current_end, tz=timezone.utc)
+                    if expires_at >= datetime.now(timezone.utc):
+                        return CreateSubscriptionResponse(
+                            subscription_id=existing_sub_id,
+                            key_id=RAZORPAY_KEY_ID,
+                        )
+        except Exception:
+            # If fetch fails, treat as invalid
+            pass
+
+        # ---- (Optional) Cancel the old subscription to avoid double billing ----
+        # If we reach here, the existing subscription is either expired, belongs
+        # to a different customer, or we couldn't fetch it. To be safe, we
+        # schedule cancellation at period end if it's still active.
+        try:
+            client.subscription.cancel(existing_sub_id, {"cancel_at_cycle_end": 1})
+            logger.info("Cancelled old subscription %s for user %s", existing_sub_id, user_id)
+        except Exception:
+            pass  # Ignore errors; the old subscription will eventually expire
+
+    # ---- Create a NEW subscription with the correct customer ----
     try:
         subscription = client.subscription.create({
             "plan_id": RAZORPAY_PLAN_ID,
-            "customer_id": customer_id,
+            "customer_id": correct_customer_id,
             "total_count": 12,
             "quantity": 1,
             "notes": {"user_id": user_id},
@@ -768,13 +774,13 @@ def create_subscription(
     except BadRequestError as e:
         raise HTTPException(400, f"Razorpay subscription creation failed: {e}")
 
-    # 4. Store the subscription details (inactive until webhook confirms payment)
+    # ---- Store the subscription details (overwrites any stale data) ----
     set_subscription(
         store,
         user_id,
         active=False,
         razorpay_subscription_id=subscription["id"],
-        razorpay_customer_id=customer_id,
+        razorpay_customer_id=correct_customer_id,  # always store the correct one
         plan_id=RAZORPAY_PLAN_ID,
         expires_at=None,
     )

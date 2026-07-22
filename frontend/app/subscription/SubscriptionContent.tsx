@@ -239,7 +239,7 @@ export default function SubscriptionContent() {
           onClick={() => router.push("/")}
           className="mt-4 text-sm text-ink/50 underline underline-offset-2 hover:text-ink"
         >
-          ← Back to login page
+          ← Back
         </button>
       </div>
     </div>
