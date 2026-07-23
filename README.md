@@ -2,7 +2,7 @@
 
 **AI-powered resume and cover letter tailoring for every job application.**
 
-FluxApply takes your resume and a job description, and generates a tailored resume and cover letter matched to that specific role — preserving your original formatting and only rewriting what actually needs to change.
+FluxApply takes your resume and a job description, and generates a tailored resume and cover letter matched to that specific role preserving your original formatting and only rewriting what actually needs to change.
 
 - **Website:** [fluxapply.me](https://www.fluxapply.me/)  
 - **Demo video:** [Watch here](https://fluxapply-public-assets.s3.ap-south-2.amazonaws.com/demo.mp4)
