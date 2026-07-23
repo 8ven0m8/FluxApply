@@ -16,7 +16,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
-from datetime import datetime, timezone, timedelta  # <-- added
+from datetime import datetime, timezone, timedelta
 
 from os import getenv
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header, Depends
@@ -51,7 +51,6 @@ from usage_tracking import (
 import razorpay
 from razorpay.errors import SignatureVerificationError, BadRequestError
 
-# NEW: import subscription utilities
 from subscription_utils import (
     get_subscription,
     set_subscription,
@@ -62,11 +61,10 @@ from subscription_utils import (
     mark_webhook_event_processed,
 )
 
-# ---------- Razorpay config ----------
 RAZORPAY_KEY_ID = getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = getenv("RAZORPAY_KEY_SECRET")
 RAZORPAY_WEBHOOK_SECRET = getenv("RAZORPAY_WEBHOOK_SECRET")
-RAZORPAY_PLAN_ID = getenv("RAZORPAY_PLAN_ID")   # the monthly plan ID
+RAZORPAY_PLAN_ID = getenv("RAZORPAY_PLAN_ID")
 
 client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
@@ -96,11 +94,10 @@ def _assert_required_env() -> None:
             "Set these before starting the app."
         )
 
-    # MAX_RESUME_UPLOAD_BYTES is in raw bytes, not MB. The most common
-    # misconfiguration is setting it to something like "10" meaning "10 MB"
-    # — which silently becomes a 10-byte limit and shows users a nonsensical
-    # "Max allowed size is 0 MB." error (integer division: 10 // 1048576 == 0).
-    # Catch that at boot instead of shipping a broken upload limit.
+    # MAX_RESUME_UPLOAD_BYTES is in raw bytes, not MB. Setting it to something
+    # like "10" (meaning "10 MB") silently becomes a 10-byte limit and shows
+    # users a nonsensical "Max allowed size is 0 MB." error (integer division:
+    # 10 // 1048576 == 0). Catch that at boot instead of shipping it broken.
     if MAX_RESUME_UPLOAD_BYTES < 1024 * 1024:
         raise RuntimeError(
             f"MAX_RESUME_UPLOAD_BYTES is set to {MAX_RESUME_UPLOAD_BYTES} bytes, which is "
@@ -111,32 +108,25 @@ def _assert_required_env() -> None:
 DB_URI = getenv("DB_URI")
 logger = logging.getLogger(__name__)
 
-# Tune via env if needed later; 10 is plenty for a single small instance and
-# stays well under Postgres's default max_connections (100).
+# Stays well under Postgres's default max_connections (100); tune via env if needed.
 DB_POOL_MIN_SIZE = int(getenv("DB_POOL_MIN_SIZE", "1"))
 DB_POOL_MAX_SIZE = int(getenv("DB_POOL_MAX_SIZE", "10"))
 
 # Safety-net cap on $ spend per user per month, independent of whatever
-# product-level plan limit (e.g. "N generations/month" for the ₹300 tier)
-# you enforce elsewhere. This just stops a runaway/abusive user from costing
-# real money even if the product-level limit has a bug. Generous on purpose —
-# tighten once you've picked real plan tiers.
+# product-level plan limit you enforce elsewhere. Stops a runaway/abusive
+# user from costing real money even if the product-level limit has a bug.
 MONTHLY_USER_COST_CAP_USD = float(getenv("MONTHLY_USER_COST_CAP_USD", "2.00"))
 
-# Resumes are PDFs/docx, not video files — 10 MB is generous for a text
-# document. Enforced by streaming in chunks and aborting early, since
-# Content-Length can be missing (chunked transfer) or spoofed, so it can't
-# be trusted as the only check.
+# Enforced by streaming in chunks and aborting early, since Content-Length
+# can be missing (chunked transfer) or spoofed, so it can't be trusted alone.
 MAX_RESUME_UPLOAD_BYTES = int(getenv("MAX_RESUME_UPLOAD_BYTES", str(10 * 1024 * 1024)))
 UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB read chunks
 
-# Job tracker: the small, deliberately-fixed set of states an application
-# can be in. Kept as a flat set (not stored anywhere but here) since it's
-# UI vocabulary, not domain data — changing it is a code change, not a
-# migration.
+# Job tracker states. Kept as a flat set (not stored anywhere but here) since
+# it's UI vocabulary, not domain data — changing it is a code change, not a migration.
 ALLOWED_APPLICATION_STATUSES = {"not_applied", "applied", "interviewing", "offer", "rejected"}
 
-########## Google O.Auth ##########
+
 def get_verified_email(authorization: str = Header(default=None)) -> str:
     """
     Verifies the Google ID token sent as `Authorization: Bearer <token>` and
@@ -171,8 +161,7 @@ async def lifespan(app: FastAPI):
     """
     _assert_required_env()
 
-    # Safe to call repeatedly — creates checkpoint tables if they don't exist yet.
-    await setup_checkpointer()
+    await setup_checkpointer()  # safe to call repeatedly — creates checkpoint tables if missing
     open_usage_pool()
 
     app.state.checkpointer = await open_checkpointer_pool(
@@ -190,7 +179,6 @@ async def lifespan(app: FastAPI):
                 DB_POOL_MIN_SIZE, DB_POOL_MAX_SIZE,
             )
             yield
-        # `with` block exit closes the store's pool cleanly on shutdown.
     finally:
         await close_checkpointer_pool()
         close_usage_pool()
@@ -201,20 +189,16 @@ GOOGLE_CLIENT_ID = getenv("GOOGLE_CLIENT_ID")
 
 
 def get_store(request: Request) -> PostgresStore:
-    """Dependency that hands route handlers the single pooled store created at startup."""
     return request.app.state.store
 
 
 def get_checkpointer(request: Request):
-    """Dependency that hands route handlers the single pooled checkpointer created at startup."""
     return request.app.state.checkpointer
 
 
 # Explicit origin whitelist — never use "*" here, since this API is
 # session/cookie-authenticated and a wildcard would let any website read
 # responses (resumes, tailored content, etc.) from a logged-in user's browser.
-# Set FRONTEND_ORIGINS as a comma-separated list in prod, e.g.
-#   FRONTEND_ORIGINS=https://fluxapply.com,https://www.fluxapply.com
 _default_dev_origins = "http://localhost:3000,http://127.0.0.1:3000"
 ALLOWED_ORIGINS = [
     origin.strip()
@@ -252,12 +236,12 @@ async def handle_usage_limit_exceeded(request: Request, exc: UsageLimitExceeded)
 
 @app.exception_handler(ValueError)
 async def handle_value_error(request: Request, exc: ValueError):
-    # Covers things like get_refined_jd()'s "not found" case, and other
-    # deliberate ValueErrors raised for bad/missing input deeper in the pipeline.
+    # Covers get_refined_jd()'s "not found" case and other deliberate
+    # ValueErrors raised for bad/missing input deeper in the pipeline.
     return JSONResponse(status_code=404, content={"error": "not_found", "detail": str(exc)})
 
 
-@app.exception_handler(SubscriptionRequiredError)  # <-- fixed
+@app.exception_handler(SubscriptionRequiredError)
 async def handle_subscription_required(request: Request, exc: SubscriptionRequiredError):
     return JSONResponse(status_code=403, content={"error": "subscription_required", "detail": str(exc)})
 
@@ -265,7 +249,7 @@ async def handle_subscription_required(request: Request, exc: SubscriptionRequir
 @app.exception_handler(Exception)
 async def handle_unexpected_error(request: Request, exc: Exception):
     # Last-resort catch-all: never leak a raw stack trace to the client.
-    # Full traceback still goes to your server logs via FastAPI's default logging.
+    # Full traceback still goes to server logs via FastAPI's default logging.
     return JSONResponse(
         status_code=500,
         content={"error": "internal_error", "detail": "Something went wrong processing this request."},
@@ -311,7 +295,7 @@ def upload_resume(
     store: PostgresStore = Depends(get_store),
 ):
     user_id = generate_user_id(email)
-    require_subscription(store, user_id, email)  # <-- now imported
+    require_subscription(store, user_id, email)
     enforce_monthly_cap(user_id, MONTHLY_USER_COST_CAP_USD)
 
     suffix = Path(file.filename).suffix.lower()
@@ -519,13 +503,6 @@ def set_application_status(
     email: str = Depends(get_verified_email),
     store: PostgresStore = Depends(get_store),
 ):
-    """
-    Job tracker: lets the user mark where an application actually stands
-    (applied / interviewing / offer / rejected) independent of whether the
-    resume/cover-letter files still exist. Stored in the same PostgresStore
-    the rest of the app already uses — a new namespace, no new
-    infrastructure.
-    """
     if req.status not in ALLOWED_APPLICATION_STATUSES:
         raise HTTPException(
             400, f"status must be one of {sorted(ALLOWED_APPLICATION_STATUSES)}, got {req.status!r}."
@@ -540,9 +517,8 @@ def set_application_status(
 
 ########## /resume/{jd_id}/content ##########
 # Read-only fetch of already-stored tailored resume content — lets the
-# editor open a *past* application (selected from the sidebar) without
-# re-running /generate, which would re-invoke the LLM and overwrite any
-# prior edits.
+# editor open a *past* application without re-running /generate, which
+# would re-invoke the LLM and overwrite any prior edits.
 
 class ResumeContentResponse(BaseModel):
     tailored_resume: str  # JSON string
@@ -572,8 +548,8 @@ def get_cover_letter_content(
     if result is None:
         raise HTTPException(404, f"No cover letter found for jd_id={jd_id!r}. Generate it first.")
     data = result.value["data"]
-    # generate_coverletter_docx_node/shorten_coverletter_node store this
-    # pre-serialized in some code paths — same defensive check they use.
+    # Some code paths (shorten_coverletter_node) store this pre-serialized —
+    # same defensive check they use.
     return CoverLetterContentResponse(cover_letter=data if isinstance(data, str) else json.dumps(data))
 
 
@@ -600,11 +576,10 @@ def generate(
 
 
 ########## /resume/{jd_id}/render ##########
-# Powers "edit before download": the editor works on the same structured
-# content /generate already returns (TailoredResumeContent), and this just
-# re-runs the existing deterministic docx-formatting step on it — no LLM
-# call, so edits render back exactly as typed, and it's cheap enough to
-# call on every save.
+# Powers "edit before download": works on the same structured content
+# /generate already returns, and just re-runs the existing deterministic
+# docx-formatting step on it — no LLM call, so edits render back exactly
+# as typed, and it's cheap enough to call on every save.
 
 class ResumeRenderResponse(BaseModel):
     tailored_resume: str  # JSON string, echoes back what was saved
@@ -618,7 +593,7 @@ def render_resume(
     store: PostgresStore = Depends(get_store),
 ):
     user_id = generate_user_id(email)
-    require_subscription(store, user_id, email)  # <-- added
+    require_subscription(store, user_id, email)
 
     store.put(("user", user_id, "tailored_resumes"), jd_id, {"data": content.model_dump()})
 
@@ -654,7 +629,7 @@ def render_cover_letter(
     store: PostgresStore = Depends(get_store),
 ):
     user_id = generate_user_id(email)
-    require_subscription(store, user_id, email)  # <-- added
+    require_subscription(store, user_id, email)
 
     store.put(("user", user_id, "cover_letter"), jd_id, {"data": content.model_dump()})
 
@@ -698,13 +673,10 @@ def create_subscription(
 ):
     user_id = generate_user_id(email)
 
-    # ---- Helper: get (or create) the Razorpay customer for this email ----
     def get_customer_id_for_email(email: str) -> str:
-        # 1. Look up existing customer by email
         existing = client.customer.all({"email": email})
         if existing.get("count", 0) > 0:
             return existing["items"][0]["id"]
-        # 2. Create a new customer
         try:
             customer = client.customer.create({
                 "email": email,
@@ -721,21 +693,17 @@ def create_subscription(
                     return retry["items"][0]["id"]
             raise HTTPException(400, f"Razorpay customer creation failed: {e}")
 
-    # The CORRECT customer ID derived from the authenticated email
     correct_customer_id = get_customer_id_for_email(email)
 
-    # ---- Check for an existing subscription, but verify its customer ----
     sub_info = get_subscription(store, user_id)
     existing_sub_id = sub_info.get("razorpay_subscription_id")
 
     if sub_info.get("active") and existing_sub_id:
-        # Fetch the subscription from Razorpay to confirm its customer
+        # Fetch the subscription from Razorpay to confirm its customer before reusing it.
         try:
             sub_details = client.subscription.fetch(existing_sub_id)
             sub_customer_id = sub_details.get("customer_id")
-            # If the subscription's customer matches the correct one, we can reuse it
             if sub_customer_id == correct_customer_id:
-                # Check that it's still valid (not expired)
                 current_end = sub_details.get("current_end")
                 if current_end:
                     expires_at = datetime.fromtimestamp(current_end, tz=timezone.utc)
@@ -745,20 +713,16 @@ def create_subscription(
                             key_id=RAZORPAY_KEY_ID,
                         )
         except Exception:
-            # If fetch fails, treat as invalid
             pass
 
-        # ---- (Optional) Cancel the old subscription to avoid double billing ----
-        # If we reach here, the existing subscription is either expired, belongs
-        # to a different customer, or we couldn't fetch it. To be safe, we
-        # schedule cancellation at period end if it's still active.
+        # Existing subscription is expired, belongs to a different customer,
+        # or couldn't be fetched — schedule cancellation to avoid double billing.
         try:
             client.subscription.cancel(existing_sub_id, {"cancel_at_cycle_end": 1})
             logger.info("Cancelled old subscription %s for user %s", existing_sub_id, user_id)
         except Exception:
-            pass  # Ignore errors; the old subscription will eventually expire
+            pass  # old subscription will eventually expire on its own
 
-    # ---- Create a NEW subscription with the correct customer ----
     try:
         subscription = client.subscription.create({
             "plan_id": RAZORPAY_PLAN_ID,
@@ -774,13 +738,12 @@ def create_subscription(
     except BadRequestError as e:
         raise HTTPException(400, f"Razorpay subscription creation failed: {e}")
 
-    # ---- Store the subscription details (overwrites any stale data) ----
     set_subscription(
         store,
         user_id,
         active=False,
         razorpay_subscription_id=subscription["id"],
-        razorpay_customer_id=correct_customer_id,  # always store the correct one
+        razorpay_customer_id=correct_customer_id,
         plan_id=RAZORPAY_PLAN_ID,
         expires_at=None,
     )
@@ -806,17 +769,11 @@ def subscription_status(
     user_id = generate_user_id(email)
     sub = get_subscription(store, user_id)
 
-    # Exempt accounts (e.g. your own test/admin accounts) get free access
-    # regardless of whatever's stored for them, and are not billed through
-    # Razorpay — /subscription/cancel explicitly refuses these emails. So
-    # besides marking active with a far-future expiry, also clear out any
-    # Razorpay-specific fields. Without this, an account that had a real
-    # test subscription before being added to the exempt list would keep
-    # showing a "Cancel subscription" button (from leftover
-    # razorpay_subscription_id in the store) that errors when clicked,
-    # while an account that never subscribed correctly shows no button —
-    # same exemption, inconsistent UI, purely because of what happened to
-    # be in the store beforehand.
+    # Exempt accounts (e.g. test/admin) get free access regardless of what's
+    # stored for them and aren't billed through Razorpay, so also clear any
+    # leftover Razorpay fields — otherwise an account that had a real test
+    # subscription before being exempted would show a "Cancel subscription"
+    # button that errors when clicked.
     if email in SUBSCRIPTION_EXEMPT_EMAILS:
         sub["active"] = True
         sub["expires_at"] = (datetime.now(timezone.utc) + timedelta(days=3650)).isoformat()
@@ -837,14 +794,13 @@ def cancel_subscription(
     immediately — the user already paid for this period, so they keep
     access through `expires_at` and simply aren't charged again after that.
 
-    Unlike /subscription/create's webhook-only pattern, it's fine to update
-    our own store synchronously here (not wait for a webhook): this isn't
-    inferring anything from an untrusted client callback, it's reading the
-    direct, authoritative response from our own server-to-server call to
-    Razorpay's cancel API. The actual final deactivation at period end
-    still goes through the "subscription.cancelled" webhook, same as
-    always — this endpoint only sets the "won't renew" flag early so the
-    UI can reflect it right away.
+    It's fine to update our own store synchronously here (unlike
+    /subscription/create's webhook-only pattern): this reads the direct,
+    authoritative response from our own server-to-server call to Razorpay's
+    cancel API, not an untrusted client callback. The actual final
+    deactivation at period end still goes through the
+    "subscription.cancelled" webhook, same as always — this endpoint only
+    sets the "won't renew" flag early so the UI can reflect it right away.
     """
     if email in SUBSCRIPTION_EXEMPT_EMAILS:
         raise HTTPException(400, "This account isn't billed through Razorpay.")
@@ -855,14 +811,9 @@ def cancel_subscription(
     if not subscription_id or not sub_info.get("active"):
         raise HTTPException(400, "No active subscription to cancel.")
     if sub_info.get("cancel_at_period_end"):
-        # Already scheduled — nothing new to do, just return current state.
         return SubscriptionStatusResponse(**sub_info)
 
     try:
-        # cancel_at_cycle_end=1: don't cancel now, let the current period
-        # run out, then stop renewing. Razorpay fires "subscription.cancelled"
-        # at that point, which is what our webhook handler uses to finally
-        # flip `active` to False.
         client.subscription.cancel(subscription_id, {"cancel_at_cycle_end": 1})
     except BadRequestError as e:
         raise HTTPException(400, f"Razorpay subscription cancellation failed: {e}")
@@ -891,14 +842,11 @@ async def razorpay_webhook(request: Request):
     if not sig_header:
         raise HTTPException(400, "Missing x-razorpay-signature header")
 
-    # Decode defensively: a malformed body should surface as a clean 400,
-    # not a 500 from an unhandled UnicodeDecodeError.
     try:
         payload = raw_payload.decode("utf-8")
     except UnicodeDecodeError:
         raise HTTPException(400, "Payload is not valid UTF-8")
 
-    # Verify signature
     try:
         client.utility.verify_webhook_signature(
             payload,
@@ -913,29 +861,25 @@ async def razorpay_webhook(request: Request):
     payload_data = event.get("payload", {})
     store: PostgresStore = request.app.state.store
 
-    # Idempotency: Razorpay redelivers events (timeouts, retries after a
-    # slow-but-successful 2xx, etc.), and our handlers are not all safely
-    # replayable — e.g. a stale "activated" event replayed after a later,
-    # legitimate "cancelled" would silently reactivate the user. Every
-    # Razorpay webhook payload carries a unique top-level "id"; skip
-    # anything we've already processed.
+    # Razorpay redelivers events (timeouts, retries after a slow-but-successful
+    # 2xx, etc.) and our handlers aren't all safely replayable — e.g. a stale
+    # "activated" event replayed after a later "cancelled" would silently
+    # reactivate the user. Every payload carries a unique top-level "id".
     event_id = event.get("id")
     if was_webhook_event_processed(store, event_id):
         logger.info("Ignoring duplicate/replayed webhook event %s (%s)", event_id, event_type)
         return {"status": "duplicate_ignored"}
 
     if event_type == "subscription.activated":
-        # First successful payment – activate subscription
         sub = payload_data.get("subscription", {}).get("entity", {})
         subscription_id = sub.get("id")
         user_id = sub.get("notes", {}).get("user_id")
         if not user_id or not subscription_id:
             return {"status": "ignored"}
 
-        # Get subscription details to know expiry (current_end is in Unix timestamp)
         try:
             sub_details = client.subscription.fetch(subscription_id)
-            current_end = sub_details.get("current_end")  # Unix timestamp
+            current_end = sub_details.get("current_end")
             expires_at = datetime.fromtimestamp(current_end, tz=timezone.utc)
         except Exception:
             expires_at = datetime.now(timezone.utc) + timedelta(days=30)
@@ -952,7 +896,6 @@ async def razorpay_webhook(request: Request):
         logger.info("Subscription activated for user %s", user_id)
 
     elif event_type == "subscription.charged":
-        # Renewal payment succeeded – extend expiry
         sub = payload_data.get("subscription", {}).get("entity", {})
         subscription_id = sub.get("id")
         user_id = sub.get("notes", {}).get("user_id")
@@ -997,13 +940,12 @@ async def razorpay_webhook(request: Request):
         logger.info("Subscription cancelled for user %s", user_id)
 
     elif event_type in ("subscription.halted", "subscription.paused"):
-        # "halted" is Razorpay's terminal state after retries on a renewal
-        # payment are exhausted — the customer's card is failing and
-        # Razorpay has given up trying. Previously unhandled, which meant a
-        # user in this state stayed "active" in our own store until the old
-        # `expires_at` happened to pass, i.e. free access during the whole
-        # dunning window. "paused" is the same idea for a merchant-initiated
-        # pause. Both mean: access should stop now, not at the old expiry.
+        # "halted" is Razorpay's terminal state after renewal-payment retries
+        # are exhausted — the card is failing and Razorpay has given up.
+        # Previously unhandled, which left the user "active" in our store
+        # until the old expiry passed, i.e. free access during the whole
+        # dunning window. "paused" is the merchant-initiated equivalent.
+        # Both mean access should stop now, not at the old expiry.
         sub = payload_data.get("subscription", {}).get("entity", {})
         subscription_id = sub.get("id")
         user_id = sub.get("notes", {}).get("user_id")
@@ -1023,10 +965,9 @@ async def razorpay_webhook(request: Request):
         logger.info("Subscription %s for user %s", event_type.split(".")[-1], user_id)
 
     elif event_type == "payment.failed":
-        # A failed renewal charge on its own doesn't necessarily mean the
-        # subscription is dead yet (Razorpay retries before halting it), so
-        # we don't deactivate here — that's what subscription.halted is for.
-        # Just log it so failed renewals are visible/debuggable.
+        # A failed renewal charge doesn't necessarily mean the subscription is
+        # dead yet (Razorpay retries before halting it) — subscription.halted
+        # handles that. Just log it so failed renewals are visible/debuggable.
         payment = payload_data.get("payment", {}).get("entity", {})
         logger.warning(
             "Razorpay payment failed: payment_id=%s error=%s",

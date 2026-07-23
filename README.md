@@ -1,19 +1,70 @@
 # FluxApply
-Make applying jobs painless and easy
 
-## Backend TODOs
+**AI-powered resume and cover letter tailoring for every job application.**
 
-**Priority — likely to break in real use**
-- [✓] Add try/except + retry logic around `llm.invoke()` → `parser.parse()` in `tailor_resume_node`, `generate_coverletter_node`, and `shorten_coverletter_node` — currently any malformed LLM response or schema validation failure crashes the whole graph run.
-- [✓] Replace local `/tmp` (or `./tmp`) file paths with durable storage (S3/GCS/etc.) — local files won't survive in serverless/ephemeral environments, and the current return value (a local path) isn't usable by a real client unless something else uploads it first.
-- [✓] Add input validation at the start of the graph (e.g. in `tailor_resume_node` or a dedicated first node) to confirm `resume_facts` and `refined_jd` actually exist for the given `user_id`/`jd_id` before running expensive LLM calls — right now a bad ID fails deep with an unclear `None.value` error.
+FluxApply takes your resume and a job description, and generates a tailored resume and cover letter matched to that specific role — preserving your original formatting and only rewriting what actually needs to change.
 
-**Worth doing — consistency/robustness**
-- [⨯] Add a page-count check + shorten loop for the **resume** (mirroring the cover letter's `generate_cover_letter` → `shorten_cover_letter` pattern) — confirm whether `build_resume_docx`/the style template already constrains length, since resumes are typically more page-sensitive than cover letters.
-- [⨯] Add cleanup/lifecycle management for generated `.docx` files after they're served to the user (or after failed runs), so orphaned files don't accumulate.
-- [✓] Standardize path construction across all nodes to use `pathlib.Path` consistently (currently mixed with f-strings in places) to avoid subtle formatting inconsistencies.
+- **Website:** [fluxapply.me](https://www.fluxapply.me/)  
+- **Demo video:** [Watch here](https://fluxapply-public-assets.s3.ap-south-2.amazonaws.com/demo.mp4)
 
-**Optional — depends on product scope**
-- [ ] Add a grounding/hallucination check node that verifies no fabricated companies, skills, or metrics appear in the tailored resume or cover letter output (prompts currently instruct against this, but don't guarantee it).
-- [ ] Add a final packaging node — e.g. bundling resume + cover letter into a single response object with signed download URLs, or zipping them together.
-- [ ] Decide on and implement a policy for what happens if `shorten_cover_letter` exhausts its 2 attempts and the letter still overflows — currently it just ends silently with the best available version; may want to log/flag this case for visibility.
+---
+
+## What it does
+
+1. **Upload your resume** —> FluxApply extracts your experience, skills, and formatting style.
+2. **Submit a job description** (paste text or a URL) —> it's scraped and refined into structured requirements.
+3. **Generate** —> an LLM pipeline diffs your resume against the JD's requirements and rewrites only the matched items, producing a tailored resume and a cover letter.
+4. **Edit and download** —> review the generated content in-app, make edits, and export polished `.docx` files styled to match your original resume.
+5. **Track applications** —> a persistent sidebar keeps every JD you've tailored for, with status tracking (applied, interviewing, offer, rejected).
+
+## Key design principles
+
+- **ID-based fact matching** —> the LLM only rewrites resume items it can match against the job's requirements; it never invents or re-originates experience you didn't have.
+- **No silent overwrites** —> edits you make by hand are never auto-rewritten by the LLM (e.g. cover letter length isn't auto-shortened; you're warned and given control instead).
+- **Style preservation** —> tailored documents are rendered back into your original resume's formatting, not a generic template.
+
+## Tech stack
+
+**Backend**
+- FastAPI
+- LangGraph + `PostgresStore` for long-term memory, `AsyncPostgresSaver` for workflow checkpointing
+- Playwright for job description scraping
+- `python-docx` / `pypdf` for resume extraction and document generation
+- Pydantic (`PydanticOutputParser`) for structured LLM outputs throughout
+- AWS S3 for file storage (with lifecycle rules for ephemeral generated files)
+- Razorpay for subscription billing
+- Google OAuth for authentication
+
+**Frontend**
+- Next.js
+- NextAuth.js (Google OAuth)
+
+## Architecture
+
+The core tailoring pipeline is a LangGraph workflow:
+
+![Graph Architecture](https://fluxapply-public-assets.s3.ap-south-2.amazonaws.com/graph.png)
+
+Each user's data (resume facts, refined job descriptions, tailored resumes, cover letters, application status) is namespaced in Postgres by `user_id` and `jd_id`, keeping every user's data fully isolated.
+
+## API overview
+
+| Endpoint | Description |
+|---|---|
+| `POST /users` | Get or create a deterministic `user_id` from an authenticated email |
+| `POST /resume/upload` | Upload a resume, extract structured facts |
+| `POST /jd/submit` | Submit a job description (URL or pasted text) |
+| `POST /jd/{jd_id}/paste` | Resume a JD flow that needed manually pasted text |
+| `POST /generate` | Run the full tailoring pipeline for a given JD |
+| `PUT /resume/{jd_id}/render` | Re-render an edited tailored resume to `.docx` |
+| `PUT /cover-letter/{jd_id}/render` | Re-render an edited cover letter to `.docx` |
+| `GET /applications` | List all applications tracked for the user |
+| `PUT /applications/{jd_id}/status` | Update an application's status |
+| `POST /subscription/create` | Start a Razorpay subscription |
+| `POST /webhook/razorpay` | Razorpay billing event webhook |
+
+Authentication is via Google ID tokens (`Authorization: Bearer <token>`), verified server-side on every request — the client never supplies its own `user_id`.
+
+## Status
+
+FluxApply is live at [fluxapply.me](https://www.fluxapply.me/) and under active development.
