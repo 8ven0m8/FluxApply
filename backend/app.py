@@ -47,6 +47,9 @@ from usage_tracking import (
     enforce_monthly_cap,
     get_monthly_usage,
     UsageLimitExceeded,
+    has_free_tier_available,
+    log_free_tier_usage,
+    get_free_tier_status,
 )
 import razorpay
 from razorpay.errors import SignatureVerificationError, BadRequestError
@@ -55,6 +58,7 @@ from subscription_utils import (
     get_subscription,
     set_subscription,
     require_subscription,
+    is_subscribed,
     SubscriptionRequiredError,
     SUBSCRIPTION_EXEMPT_EMAILS,
     was_webhook_event_processed,
@@ -70,12 +74,6 @@ client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
 
 def _assert_required_env() -> None:
-    """
-    Fail fast and loud at boot if a required secret is missing, instead of
-    limping along with client = razorpay.Client(auth=(None, None)) and only
-    discovering it three requests later as a cryptic 401 from Razorpay or a
-    TypeError from verify_webhook_signature(secret=None).
-    """
     missing = [
         name
         for name, value in [
@@ -94,10 +92,6 @@ def _assert_required_env() -> None:
             "Set these before starting the app."
         )
 
-    # MAX_RESUME_UPLOAD_BYTES is in raw bytes, not MB. Setting it to something
-    # like "10" (meaning "10 MB") silently becomes a 10-byte limit and shows
-    # users a nonsensical "Max allowed size is 0 MB." error (integer division:
-    # 10 // 1048576 == 0). Catch that at boot instead of shipping it broken.
     if MAX_RESUME_UPLOAD_BYTES < 1024 * 1024:
         raise RuntimeError(
             f"MAX_RESUME_UPLOAD_BYTES is set to {MAX_RESUME_UPLOAD_BYTES} bytes, which is "
@@ -108,31 +102,18 @@ def _assert_required_env() -> None:
 DB_URI = getenv("DB_URI")
 logger = logging.getLogger(__name__)
 
-# Stays well under Postgres's default max_connections (100); tune via env if needed.
 DB_POOL_MIN_SIZE = int(getenv("DB_POOL_MIN_SIZE", "1"))
 DB_POOL_MAX_SIZE = int(getenv("DB_POOL_MAX_SIZE", "10"))
 
-# Safety-net cap on $ spend per user per month, independent of whatever
-# product-level plan limit you enforce elsewhere. Stops a runaway/abusive
-# user from costing real money even if the product-level limit has a bug.
 MONTHLY_USER_COST_CAP_USD = float(getenv("MONTHLY_USER_COST_CAP_USD", "2.00"))
 
-# Enforced by streaming in chunks and aborting early, since Content-Length
-# can be missing (chunked transfer) or spoofed, so it can't be trusted alone.
 MAX_RESUME_UPLOAD_BYTES = int(getenv("MAX_RESUME_UPLOAD_BYTES", str(10 * 1024 * 1024)))
-UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB read chunks
+UPLOAD_CHUNK_SIZE = 1024 * 1024
 
-# Job tracker states. Kept as a flat set (not stored anywhere but here) since
-# it's UI vocabulary, not domain data — changing it is a code change, not a migration.
 ALLOWED_APPLICATION_STATUSES = {"not_applied", "applied", "interviewing", "offer", "rejected"}
 
 
 def get_verified_email(authorization: str = Header(default=None)) -> str:
-    """
-    Verifies the Google ID token sent as `Authorization: Bearer <token>` and
-    returns the email Google vouches for. Every endpoint that touches user
-    data depends on this instead of trusting a client-supplied user_id/email.
-    """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Missing or malformed Authorization header. Sign in again.")
 
@@ -151,17 +132,9 @@ def get_verified_email(authorization: str = Header(default=None)) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Opens ONE pooled connection to Postgres for the lifetime of the process,
-    instead of every route handler opening/closing its own connection.
-    `PostgresStore.from_conn_string` is a context manager — entering it here
-    (once) and holding it open via `yield` is what keeps the pool alive for
-    the whole app instead of per-request. Same idea for the LangGraph
-    checkpointer used by the JD-refinement graph (open_checkpointer_pool).
-    """
     _assert_required_env()
 
-    await setup_checkpointer()  # safe to call repeatedly — creates checkpoint tables if missing
+    await setup_checkpointer()
     open_usage_pool()
 
     app.state.checkpointer = await open_checkpointer_pool(
@@ -172,7 +145,7 @@ async def lifespan(app: FastAPI):
             DB_URI,
             pool_config=PoolConfig(min_size=DB_POOL_MIN_SIZE, max_size=DB_POOL_MAX_SIZE),
         ) as store:
-            store.setup()  # safe to call repeatedly — creates store tables if missing
+            store.setup()
             app.state.store = store
             logger.info(
                 "Postgres connection pools ready (min=%d, max=%d)",
@@ -196,9 +169,6 @@ def get_checkpointer(request: Request):
     return request.app.state.checkpointer
 
 
-# Explicit origin whitelist — never use "*" here, since this API is
-# session/cookie-authenticated and a wildcard would let any website read
-# responses (resumes, tailored content, etc.) from a logged-in user's browser.
 _default_dev_origins = "http://localhost:3000,http://127.0.0.1:3000"
 ALLOWED_ORIGINS = [
     origin.strip()
@@ -214,10 +184,6 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
-
-########## Centralized error handling ##########
-# Registered once here so every endpoint gets consistent, parseable JSON
-# error bodies instead of raw 500 stack traces leaking to the client.
 
 @app.exception_handler(InputValidationError)
 async def handle_input_validation_error(request: Request, exc: InputValidationError):
@@ -236,8 +202,6 @@ async def handle_usage_limit_exceeded(request: Request, exc: UsageLimitExceeded)
 
 @app.exception_handler(ValueError)
 async def handle_value_error(request: Request, exc: ValueError):
-    # Covers get_refined_jd()'s "not found" case and other deliberate
-    # ValueErrors raised for bad/missing input deeper in the pipeline.
     return JSONResponse(status_code=404, content={"error": "not_found", "detail": str(exc)})
 
 
@@ -248,8 +212,6 @@ async def handle_subscription_required(request: Request, exc: SubscriptionRequir
 
 @app.exception_handler(Exception)
 async def handle_unexpected_error(request: Request, exc: Exception):
-    # Last-resort catch-all: never leak a raw stack trace to the client.
-    # Full traceback still goes to server logs via FastAPI's default logging.
     return JSONResponse(
         status_code=500,
         content={"error": "internal_error", "detail": "Something went wrong processing this request."},
@@ -276,7 +238,6 @@ class UsageResponse(BaseModel):
 
 @app.get("/usage/me", response_model=UsageResponse)
 def get_my_usage(email: str = Depends(get_verified_email)):
-    """Current calendar month's LLM usage/cost for the calling user."""
     user_id = generate_user_id(email)
     usage = get_monthly_usage(user_id)
     return UsageResponse(**usage, monthly_cap_usd=MONTHLY_USER_COST_CAP_USD)
@@ -286,7 +247,7 @@ def get_my_usage(email: str = Depends(get_verified_email)):
 
 class ResumeUploadResponse(BaseModel):
     user_id: str
-    resume_facts: str  # JSON string
+    resume_facts: str
 
 @app.post("/resume/upload", response_model=ResumeUploadResponse)
 def upload_resume(
@@ -295,8 +256,17 @@ def upload_resume(
     store: PostgresStore = Depends(get_store),
 ):
     user_id = generate_user_id(email)
-    require_subscription(store, user_id, email)
-    enforce_monthly_cap(user_id, MONTHLY_USER_COST_CAP_USD)
+    sub_active = is_subscribed(store, user_id, email)
+    has_resume_already = store.get(("user", user_id, "resume_facts"), "current") is not None
+
+    if not sub_active:
+        if has_resume_already:
+            raise SubscriptionRequiredError("Active subscription required to update your resume.")
+        if not has_free_tier_available(user_id, "upload"):
+            raise SubscriptionRequiredError("Free resume upload already used. Subscribe to upload or update your resume.")
+
+    if sub_active:
+        enforce_monthly_cap(user_id, MONTHLY_USER_COST_CAP_USD)
 
     suffix = Path(file.filename).suffix.lower()
     if suffix not in (".pdf", ".docx"):
@@ -322,8 +292,6 @@ def upload_resume(
             tmp.write(chunk)
 
     try:
-        # Preserve the original file in S3 — generate_resume_node needs this
-        # later to copy the candidate's existing resume styling.
         content_type = (
             "application/pdf" if suffix == ".pdf"
             else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -337,6 +305,9 @@ def upload_resume(
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
+    if not sub_active and not has_resume_already:
+        log_free_tier_usage(user_id, "upload")
+
     return ResumeUploadResponse(user_id=user_id, resume_facts=resume_facts_json)
 
 
@@ -347,10 +318,10 @@ class JDSubmitRequest(BaseModel):
     pasted_text: Optional[str] = None
 
 class JDSubmitResponse(BaseModel):
-    status: str  # "done" or "needs_paste"
+    status: str
     jd_id: str
     message: Optional[str] = None
-    refined_jd: Optional[str] = None  # JSON string, present if status == "done"
+    refined_jd: Optional[str] = None
 
 @app.post("/jd/submit", response_model=JDSubmitResponse)
 async def submit_jd(
@@ -360,8 +331,13 @@ async def submit_jd(
     store: PostgresStore = Depends(get_store),
 ):
     user_id = generate_user_id(email)
-    require_subscription(store, user_id, email)
-    enforce_monthly_cap(user_id, MONTHLY_USER_COST_CAP_USD)
+    sub_active = is_subscribed(store, user_id, email)
+
+    if not sub_active and not has_free_tier_available(user_id, "jd"):
+        raise SubscriptionRequiredError("Free daily job description submission used. Subscribe for unlimited access.")
+
+    if sub_active:
+        enforce_monthly_cap(user_id, MONTHLY_USER_COST_CAP_USD)
 
     if not req.url and not req.pasted_text:
         raise HTTPException(400, "Provide either 'url' or 'pasted_text'.")
@@ -386,6 +362,9 @@ async def submit_jd(
     if result["status"] == "needs_paste":
         return JDSubmitResponse(status="needs_paste", jd_id=jd_id, message=result["message"])
 
+    if not sub_active:
+        log_free_tier_usage(user_id, "jd")
+
     return JDSubmitResponse(
         status="done",
         jd_id=jd_id,
@@ -401,7 +380,7 @@ class JDPasteRequest(BaseModel):
 class JDPasteResponse(BaseModel):
     status: str
     jd_id: str
-    refined_jd: str  # JSON string
+    refined_jd: str
 
 @app.post("/jd/{jd_id}/paste", response_model=JDPasteResponse)
 async def paste_jd(
@@ -412,9 +391,19 @@ async def paste_jd(
     store: PostgresStore = Depends(get_store),
 ):
     user_id = generate_user_id(email)
-    require_subscription(store, user_id, email)
-    enforce_monthly_cap(user_id, MONTHLY_USER_COST_CAP_USD)
+    sub_active = is_subscribed(store, user_id, email)
+
+    if not sub_active and not has_free_tier_available(user_id, "jd"):
+        raise SubscriptionRequiredError("Free daily job description submission used. Subscribe for unlimited access.")
+
+    if sub_active:
+        enforce_monthly_cap(user_id, MONTHLY_USER_COST_CAP_USD)
+
     result = await resume_with_paste(checkpointer, store, user_id=user_id, pasted_text=req.pasted_text, thread_id=jd_id)
+
+    if not sub_active:
+        log_free_tier_usage(user_id, "jd")
+
     return JDPasteResponse(
         status="done",
         jd_id=jd_id,
@@ -428,10 +417,6 @@ class ResumeStatusResponse(BaseModel):
 
 @app.get("/resume/status", response_model=ResumeStatusResponse)
 def resume_status(email: str = Depends(get_verified_email), store: PostgresStore = Depends(get_store)):
-    """
-    Lets the frontend skip the upload step for returning users instead of
-    asking for a resume on every visit.
-    """
     user_id = generate_user_id(email)
     result = store.get(("user", user_id, "resume_facts"), "current")
     return ResumeStatusResponse(has_resume=result is not None)
@@ -450,14 +435,7 @@ class ApplicationSummary(BaseModel):
 
 @app.get("/applications", response_model=list[ApplicationSummary])
 def list_applications(email: str = Depends(get_verified_email), store: PostgresStore = Depends(get_store)):
-    """
-    Powers the sidebar — every JD this user has ever submitted, most recent
-    first, with download links only where the generated files still exist
-    (the S3 lifecycle rule deletes them after a few days).
-    """
     user_id = generate_user_id(email)
-    # search()'s default limit is 10 — override it, or applications
-    # beyond the 10th most recently *written* silently disappear.
     items = store.search(("user", user_id, "refined_jds"), limit=200)
     statuses = {
         it.key: it.value["data"]["status"]
@@ -516,12 +494,9 @@ def set_application_status(
     return ApplicationStatusResponse(jd_id=jd_id, status=req.status)
 
 ########## /resume/{jd_id}/content ##########
-# Read-only fetch of already-stored tailored resume content — lets the
-# editor open a *past* application without re-running /generate, which
-# would re-invoke the LLM and overwrite any prior edits.
 
 class ResumeContentResponse(BaseModel):
-    tailored_resume: str  # JSON string
+    tailored_resume: str
 
 @app.get("/resume/{jd_id}/content", response_model=ResumeContentResponse)
 def get_resume_content(
@@ -537,7 +512,7 @@ def get_resume_content(
 ########## /cover-letter/{jd_id}/content ##########
 
 class CoverLetterContentResponse(BaseModel):
-    cover_letter: str  # JSON string
+    cover_letter: str
 
 @app.get("/cover-letter/{jd_id}/content", response_model=CoverLetterContentResponse)
 def get_cover_letter_content(
@@ -548,8 +523,6 @@ def get_cover_letter_content(
     if result is None:
         raise HTTPException(404, f"No cover letter found for jd_id={jd_id!r}. Generate it first.")
     data = result.value["data"]
-    # Some code paths (shorten_coverletter_node) store this pre-serialized —
-    # same defensive check they use.
     return CoverLetterContentResponse(cover_letter=data if isinstance(data, str) else json.dumps(data))
 
 
@@ -569,20 +542,26 @@ def generate(
     req: GenerateRequest, email: str = Depends(get_verified_email), store: PostgresStore = Depends(get_store)
 ):
     user_id = generate_user_id(email)
-    require_subscription(store, user_id, email)
-    enforce_monthly_cap(user_id, MONTHLY_USER_COST_CAP_USD)
+    sub_active = is_subscribed(store, user_id, email)
+
+    if not sub_active and not has_free_tier_available(user_id, "generate"):
+        raise SubscriptionRequiredError("Free daily generation used. Subscribe for unlimited generations.")
+
+    if sub_active:
+        enforce_monthly_cap(user_id, MONTHLY_USER_COST_CAP_USD)
+
     result = generate_tailored_resume(user_id=user_id, jd_id=req.jd_id, store=store)
+
+    if not sub_active:
+        log_free_tier_usage(user_id, "generate")
+
     return GenerateResponse(**result)
 
 
 ########## /resume/{jd_id}/render ##########
-# Powers "edit before download": works on the same structured content
-# /generate already returns, and just re-runs the existing deterministic
-# docx-formatting step on it — no LLM call, so edits render back exactly
-# as typed, and it's cheap enough to call on every save.
 
 class ResumeRenderResponse(BaseModel):
-    tailored_resume: str  # JSON string, echoes back what was saved
+    tailored_resume: str
     resume_docx_url: str
 
 @app.put("/resume/{jd_id}/render", response_model=ResumeRenderResponse)
@@ -593,7 +572,6 @@ def render_resume(
     store: PostgresStore = Depends(get_store),
 ):
     user_id = generate_user_id(email)
-    require_subscription(store, user_id, email)
 
     store.put(("user", user_id, "tailored_resumes"), jd_id, {"data": content.model_dump()})
 
@@ -617,7 +595,7 @@ def render_resume(
 ########## /cover-letter/{jd_id}/render ##########
 
 class CoverLetterRenderResponse(BaseModel):
-    cover_letter: str  # JSON string, echoes back what was saved
+    cover_letter: str
     cover_letter_docx_url: str
     page_count: int
 
@@ -629,7 +607,6 @@ def render_cover_letter(
     store: PostgresStore = Depends(get_store),
 ):
     user_id = generate_user_id(email)
-    require_subscription(store, user_id, email)
 
     store.put(("user", user_id, "cover_letter"), jd_id, {"data": content.model_dump()})
 
@@ -643,10 +620,6 @@ def render_cover_letter(
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
-    # Deliberately NOT auto-shortening here even if pages > 1 — that's the
-    # LLM rewriting a paragraph the user just hand-edited, which would
-    # silently undo their change. page_count is returned so the frontend
-    # can warn instead, and let the user trim it themselves.
     s3_key = f"{user_id}/{jd_id}_cover_letter.docx"
     upload_bytes_to_s3(doc_bytes, s3_key, tags={"ephemeral": "true"})
 
@@ -655,6 +628,20 @@ def render_cover_letter(
         cover_letter_docx_url=generate_presigned_url(s3_key),
         page_count=pages,
     )
+
+########## /free-tier/status ##########
+
+class FreeTierStatusResponse(BaseModel):
+    upload_used: int
+    jd_used: int
+    generate_used: int
+    generate_available: bool
+    resets_at: Optional[str]
+
+@app.get("/free-tier/status", response_model=FreeTierStatusResponse)
+def free_tier_status(email: str = Depends(get_verified_email)):
+    user_id = generate_user_id(email)
+    return FreeTierStatusResponse(**get_free_tier_status(user_id))
 
 ###### Razorpay endpoints ########
 class CreateSubscriptionRequest(BaseModel):
@@ -685,8 +672,6 @@ def create_subscription(
             })
             return customer["id"]
         except BadRequestError as e:
-            # Rare race: created elsewhere between our lookup and this call.
-            # Fall back to a second lookup.
             if "Customer already exists" in str(e):
                 retry = client.customer.all({"email": email})
                 if retry.get("count", 0) > 0:
@@ -699,7 +684,6 @@ def create_subscription(
     existing_sub_id = sub_info.get("razorpay_subscription_id")
 
     if sub_info.get("active") and existing_sub_id:
-        # Fetch the subscription from Razorpay to confirm its customer before reusing it.
         try:
             sub_details = client.subscription.fetch(existing_sub_id)
             sub_customer_id = sub_details.get("customer_id")
@@ -715,13 +699,11 @@ def create_subscription(
         except Exception:
             pass
 
-        # Existing subscription is expired, belongs to a different customer,
-        # or couldn't be fetched — schedule cancellation to avoid double billing.
         try:
             client.subscription.cancel(existing_sub_id, {"cancel_at_cycle_end": 1})
             logger.info("Cancelled old subscription %s for user %s", existing_sub_id, user_id)
         except Exception:
-            pass  # old subscription will eventually expire on its own
+            pass
 
     try:
         subscription = client.subscription.create({
@@ -769,11 +751,6 @@ def subscription_status(
     user_id = generate_user_id(email)
     sub = get_subscription(store, user_id)
 
-    # Exempt accounts (e.g. test/admin) get free access regardless of what's
-    # stored for them and aren't billed through Razorpay, so also clear any
-    # leftover Razorpay fields — otherwise an account that had a real test
-    # subscription before being exempted would show a "Cancel subscription"
-    # button that errors when clicked.
     if email in SUBSCRIPTION_EXEMPT_EMAILS:
         sub["active"] = True
         sub["expires_at"] = (datetime.now(timezone.utc) + timedelta(days=3650)).isoformat()
@@ -788,20 +765,6 @@ def cancel_subscription(
     email: str = Depends(get_verified_email),
     store: PostgresStore = Depends(get_store),
 ):
-    """
-    Schedules the caller's Razorpay subscription to stop renewing at the
-    end of the current billing period, rather than cutting access off
-    immediately — the user already paid for this period, so they keep
-    access through `expires_at` and simply aren't charged again after that.
-
-    It's fine to update our own store synchronously here (unlike
-    /subscription/create's webhook-only pattern): this reads the direct,
-    authoritative response from our own server-to-server call to Razorpay's
-    cancel API, not an untrusted client callback. The actual final
-    deactivation at period end still goes through the
-    "subscription.cancelled" webhook, same as always — this endpoint only
-    sets the "won't renew" flag early so the UI can reflect it right away.
-    """
     if email in SUBSCRIPTION_EXEMPT_EMAILS:
         raise HTTPException(400, "This account isn't billed through Razorpay.")
 
@@ -861,10 +824,6 @@ async def razorpay_webhook(request: Request):
     payload_data = event.get("payload", {})
     store: PostgresStore = request.app.state.store
 
-    # Razorpay redelivers events (timeouts, retries after a slow-but-successful
-    # 2xx, etc.) and our handlers aren't all safely replayable — e.g. a stale
-    # "activated" event replayed after a later "cancelled" would silently
-    # reactivate the user. Every payload carries a unique top-level "id".
     event_id = event.get("id")
     if was_webhook_event_processed(store, event_id):
         logger.info("Ignoring duplicate/replayed webhook event %s (%s)", event_id, event_type)
@@ -940,12 +899,6 @@ async def razorpay_webhook(request: Request):
         logger.info("Subscription cancelled for user %s", user_id)
 
     elif event_type in ("subscription.halted", "subscription.paused"):
-        # "halted" is Razorpay's terminal state after renewal-payment retries
-        # are exhausted — the card is failing and Razorpay has given up.
-        # Previously unhandled, which left the user "active" in our store
-        # until the old expiry passed, i.e. free access during the whole
-        # dunning window. "paused" is the merchant-initiated equivalent.
-        # Both mean access should stop now, not at the old expiry.
         sub = payload_data.get("subscription", {}).get("entity", {})
         subscription_id = sub.get("id")
         user_id = sub.get("notes", {}).get("user_id")
@@ -965,9 +918,6 @@ async def razorpay_webhook(request: Request):
         logger.info("Subscription %s for user %s", event_type.split(".")[-1], user_id)
 
     elif event_type == "payment.failed":
-        # A failed renewal charge doesn't necessarily mean the subscription is
-        # dead yet (Razorpay retries before halting it) — subscription.halted
-        # handles that. Just log it so failed renewals are visible/debuggable.
         payment = payload_data.get("payment", {}).get("entity", {})
         logger.warning(
             "Razorpay payment failed: payment_id=%s error=%s",

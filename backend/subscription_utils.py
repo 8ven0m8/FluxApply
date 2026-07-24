@@ -35,9 +35,6 @@ def get_subscription(store: BaseStore, user_id: str) -> dict:
         "razorpay_subscription_id": data.get("razorpay_subscription_id"),
         "razorpay_customer_id": data.get("razorpay_customer_id"),
         "plan_id": data.get("plan_id"),
-        # True once the user has cancelled but is still inside a period
-        # they already paid for — access stays on, but the subscription
-        # will not renew when `expires_at` is reached.
         "cancel_at_period_end": data.get("cancel_at_period_end", False),
     }
 
@@ -61,6 +58,24 @@ def set_subscription(
         "cancel_at_period_end": cancel_at_period_end,
     }
     store.put(("user", user_id, "subscription"), "current", {"data": data})
+
+
+def is_subscribed(store: BaseStore, user_id: str, email: Optional[str] = None) -> bool:
+    """Return True if the user has an active subscription or is exempt."""
+    if email and email in SUBSCRIPTION_EXEMPT_EMAILS:
+        return True
+    sub = get_subscription(store, user_id)
+    if not sub["active"]:
+        return False
+    expires_at = sub.get("expires_at")
+    if expires_at:
+        try:
+            expiry = datetime.fromisoformat(expires_at)
+            if expiry < datetime.now(timezone.utc):
+                return False
+        except (ValueError, TypeError):
+            return False
+    return True
 
 
 def require_subscription(store: BaseStore, user_id: str, email: Optional[str] = None) -> None:
@@ -99,8 +114,6 @@ class SubscriptionRequiredError(Exception):
 # processed event IDs makes replays a safe no-op regardless of ordering.
 def was_webhook_event_processed(store: BaseStore, event_id: str) -> bool:
     if not event_id:
-        # No event id to key on — fail open to "not processed" rather than
-        # silently swallowing every event of this shape.
         return False
     result = store.get(("webhook_events", "razorpay"), event_id)
     return result is not None

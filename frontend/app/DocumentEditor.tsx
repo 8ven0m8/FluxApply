@@ -441,11 +441,44 @@ function ResumeEditor({
         ))}
       </div>
 
-      <StringListEditor
-        label="Achievements"
-        values={resume.achievements}
-        onChange={(achievements) => patch({ achievements })}
-      />
+      <div>
+        <label className={labelClass}>Achievements</label>
+        <div className="space-y-2">
+          {resume.achievements.map((ach, i) => (
+            <div key={i} className="flex gap-2">
+              <input
+                value={ach.text}
+                placeholder="Achievement text"
+                onChange={(e) => {
+                  const next = [...resume.achievements];
+                  next[i] = { ...next[i], text: e.target.value };
+                  patch({ achievements: next });
+                }}
+                className={inputClass}
+              />
+              <button
+                onClick={() =>
+                  patch({ achievements: resume.achievements.filter((_, idx) => idx !== i) })
+                }
+                aria-label="Remove achievement"
+                className="rounded border border-line px-2 text-ink/50 hover:border-rust hover:text-rust"
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() =>
+              patch({ achievements: [...resume.achievements, { text: "", links: [] }] })
+            }
+            className="text-xs text-accentDark hover:underline"
+          >
+            + Add achievement
+          </button>
+        </div>
+      </div>
 
       <SaveBar onSave={onSave} saving={saving} error={error} savedAt={savedAt} docxUrl={docxUrl} />
     </div>

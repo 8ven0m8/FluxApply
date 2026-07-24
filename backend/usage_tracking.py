@@ -3,7 +3,7 @@
 #   - see spend/usage broken down by user and endpoint                #
 #   - enforce a monthly $ safety cap per user (independent of whatever #
 #     product-level plan limit — e.g. "N generations/month" — you      #
-#     build in the frontend on top of get_monthly_usage() below)       #
+#     build in the frontend/product logic on top of get_monthly_usage() below)       #
 #                                                                        #
 # Uses its own small synchronous connection pool (same pattern as the  #
 # PostgresStore / checkpointer pools in app.py) rather than piggy-      #
@@ -69,6 +69,20 @@ def open_usage_pool(min_size: int = 1, max_size: int = 5) -> ConnectionPool:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_llm_usage_user_created ON llm_usage (user_id, created_at);"
+        )
+        # Free tier tracking
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS free_tier_usage (
+                id BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                endpoint TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_free_tier_user_endpoint_date ON free_tier_usage (user_id, endpoint, created_at);"
         )
     logger.info("Usage tracking pool ready (min=%d, max=%d)", min_size, max_size)
     return _usage_pool
@@ -177,3 +191,84 @@ def enforce_monthly_cap(user_id: str, max_cost_usd: float) -> None:
             f"user_id={user_id!r} has used ${usage['cost_usd']:.4f} this month, "
             f"at or above the ${max_cost_usd:.2f} cap."
         )
+
+
+# ----------------------------------------------------------------------
+# Free-tier daily quota tracking (1 generation/day for non-subscribers)
+# ----------------------------------------------------------------------
+
+def has_free_tier_available(user_id: str, endpoint: str) -> bool:
+    """
+    Check whether this user still has free quota for `endpoint` today.
+    Endpoints: 'upload' (1 ever), 'jd' (1/day), 'generate' (1/day).
+    """
+    if _usage_pool is None:
+        return False
+    with _usage_pool.connection() as conn:
+        if endpoint == "upload":
+            row = conn.execute(
+                "SELECT COUNT(*) FROM free_tier_usage WHERE user_id = %s AND endpoint = 'upload'",
+                (user_id,),
+            ).fetchone()
+            return row[0] == 0
+        else:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) FROM free_tier_usage
+                WHERE user_id = %s AND endpoint = %s AND created_at >= date_trunc('day', now())
+                """,
+                (user_id, endpoint),
+            ).fetchone()
+            return row[0] == 0
+
+
+def log_free_tier_usage(user_id: str, endpoint: str) -> None:
+    """Record that this user consumed their free quota for `endpoint`."""
+    if _usage_pool is None:
+        logger.warning("Usage pool not initialized — skipping free-tier log for user_id=%s", user_id)
+        return
+    with _usage_pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO free_tier_usage (user_id, endpoint) VALUES (%s, %s)",
+            (user_id, endpoint),
+        )
+
+
+def get_free_tier_status(user_id: str) -> dict:
+    """Return today's free-tier consumption for a user."""
+    if _usage_pool is None:
+        return {
+            "upload_used": 0,
+            "jd_used": 0,
+            "generate_used": 0,
+            "generate_available": False,
+            "resets_at": None,
+        }
+    with _usage_pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT endpoint, COUNT(*) FROM free_tier_usage
+            WHERE user_id = %s AND created_at >= date_trunc('day', now())
+            GROUP BY endpoint
+            """,
+            (user_id,),
+        ).fetchall()
+        counts = {row[0]: row[1] for row in rows}
+
+        upload_row = conn.execute(
+            "SELECT COUNT(*) FROM free_tier_usage WHERE user_id = %s AND endpoint = 'upload'",
+            (user_id,),
+        ).fetchone()
+        upload_used = upload_row[0]
+
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        resets_at = (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).isoformat()
+
+        return {
+            "upload_used": upload_used,
+            "jd_used": counts.get("jd", 0),
+            "generate_used": counts.get("generate", 0),
+            "generate_available": counts.get("generate", 0) == 0,
+            "resets_at": resets_at,
+        }

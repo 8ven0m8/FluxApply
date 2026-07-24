@@ -15,7 +15,9 @@ import {
   getCoverLetterContent,
   updateApplicationStatus,
   getSubscriptionStatus,
+  getFreeTierStatus,
   SubscriptionStatus,
+  FreeTierStatus,
   RefinedJD,
   GenerateResponse,
   ApplicationSummary,
@@ -104,8 +106,9 @@ export default function Home() {
   const [loadingApplications, setLoadingApplications] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
-  // Subscription
+  // Subscription & free tier
   const [subscription, setSubscription] = useState<SubscriptionStatus | null>(null);
+  const [freeTier, setFreeTier] = useState<FreeTierStatus | null>(null);
 
   // Dark mode
   const [isDark, setIsDark] = useState(false);
@@ -120,8 +123,7 @@ export default function Home() {
     try {
       localStorage.setItem("theme", next ? "dark" : "light");
     } catch {
-      // localStorage can throw in private-browsing/blocked-storage modes —
-      // theme just won't persist across reloads, which is fine.
+      // localStorage can throw in private-browsing/blocked-storage modes
     }
   }
 
@@ -161,13 +163,10 @@ export default function Home() {
         JSON.stringify({ step, jdId, refinedJD, result, jdUrl, jdPasteText, needsPaste, pasteMessage })
       );
     } catch {
-      // Storage full/blocked — progress just won't survive a refresh.
+      // Storage full/blocked
     }
   }, [step, jdId, refinedJD, result, jdUrl, jdPasteText, needsPaste, pasteMessage]);
 
-  // Sign-out should always land back at a clean step 1, and shouldn't leave
-  // the previous user's in-progress JD sitting in storage for whoever (or
-  // whatever session) comes next.
   useEffect(() => {
     if (sessionStatus === "unauthenticated") {
       try {
@@ -185,18 +184,12 @@ export default function Home() {
       const apps = await listApplications(token);
       setApplications(apps);
     } catch (e) {
-      // Sidebar staying stale isn't worth interrupting the main flow with
-      // an error banner — just log it.
       console.error("Failed to load applications:", e);
     } finally {
       setLoadingApplications(false);
     }
   }
 
-  // Once Google confirms who's signed in and NextAuth has captured the ID
-  // token, ask the backend to verify it and hand back the user_id it
-  // derives. Nothing here is trusted client-side — the token is what
-  // proves identity on every subsequent call.
   useEffect(() => {
     if (sessionStatus !== "authenticated" || !session?.idToken || userId) {
       return;
@@ -209,8 +202,6 @@ export default function Home() {
       .finally(() => setLoadingUser(false));
   }, [sessionStatus, session?.idToken, userId]);
 
-  // Once identified, check whether a resume is already on file, load
-  // the sidebar's application history, and fetch subscription status.
   useEffect(() => {
     if (!session?.idToken || !userId) return;
     getResumeStatus(session.idToken)
@@ -224,15 +215,28 @@ export default function Home() {
     getSubscriptionStatus(session.idToken)
       .then(setSubscription)
       .catch(() => setSubscription(null));
+    getFreeTierStatus(session.idToken)
+      .then(setFreeTier)
+      .catch(() => setFreeTier(null));
   }, [session?.idToken, userId]);
 
-  // Helper to redirect to subscription page if not active
-  function ensureSubscription(): boolean {
-    if (!subscription?.active) {
-      router.push("/subscription");
-      return false;
-    }
-    return true;
+  function hasActiveSubscription(): boolean {
+    return subscription?.active ?? false;
+  }
+
+  function canUseFreeTier(action: "upload" | "jd" | "generate"): boolean {
+    if (!freeTier) return false;
+    if (action === "upload") return freeTier.upload_used === 0;
+    if (action === "jd") return freeTier.jd_used === 0;
+    if (action === "generate") return freeTier.generate_available;
+    return false;
+  }
+
+  function ensureAccess(action: "upload" | "jd" | "generate"): boolean {
+    if (hasActiveSubscription()) return true;
+    if (canUseFreeTier(action)) return true;
+    router.push("/subscription");
+    return false;
   }
 
   async function handleUploadResume() {
@@ -241,7 +245,7 @@ export default function Home() {
       setError("Choose a .pdf or .docx resume to continue.");
       return;
     }
-    if (!ensureSubscription()) return;
+    if (!ensureAccess("upload")) return;
 
     setUploadingResume(true);
     try {
@@ -253,6 +257,7 @@ export default function Home() {
       } else {
         setStep(3);
       }
+      getFreeTierStatus(session.idToken).then(setFreeTier).catch(() => {});
     } catch (e) {
       setError(describeError(e));
     } finally {
@@ -263,7 +268,7 @@ export default function Home() {
   async function handleSubmitJD() {
     setError(null);
     if (!session?.idToken) return;
-    if (!ensureSubscription()) return;
+    if (!ensureAccess("jd")) return;
     if (!jdUrl.trim() && !jdPasteText.trim()) {
       setError("Paste a job posting URL, or paste the job description text.");
       return;
@@ -283,6 +288,7 @@ export default function Home() {
         setNeedsPaste(false);
         setStep(4);
         refreshApplications(session.idToken);
+        getFreeTierStatus(session.idToken).then(setFreeTier).catch(() => {});
       }
     } catch (e) {
       setError(describeError(e));
@@ -294,7 +300,7 @@ export default function Home() {
   async function handleResumePaste() {
     setError(null);
     if (!session?.idToken || !jdId) return;
-    if (!ensureSubscription()) return;
+    if (!ensureAccess("jd")) return;
     if (!jdPasteText.trim()) {
       setError("Paste the job description text to continue.");
       return;
@@ -308,6 +314,7 @@ export default function Home() {
       setNeedsPaste(false);
       setStep(4);
       refreshApplications(session.idToken);
+      getFreeTierStatus(session.idToken).then(setFreeTier).catch(() => {});
     } catch (e) {
       setError(describeError(e));
     } finally {
@@ -318,12 +325,13 @@ export default function Home() {
   async function handleGenerate() {
     setError(null);
     if (!session?.idToken || !jdId) return;
-    if (!ensureSubscription()) return;
+    if (!ensureAccess("generate")) return;
     setGenerating(true);
     try {
       const res = await generate(session.idToken, jdId);
       setResult(res);
       refreshApplications(session.idToken);
+      getFreeTierStatus(session.idToken).then(setFreeTier).catch(() => {});
     } catch (e) {
       setError(describeError(e));
     } finally {
@@ -498,7 +506,6 @@ export default function Home() {
           </button>
           <div className="mt-2 flex items-center gap-2">
             {session?.user?.image ? (
-              // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={session.user.image}
                 alt=""
@@ -546,413 +553,493 @@ export default function Home() {
             </p>
           </header>
 
-        <ol className="mb-10 flex gap-1 font-mono text-xs uppercase tracking-wide">
-          {([1, 2, 3, 4] as Step[]).map((s, i) => (
-            <li key={s} className="flex flex-1 items-center gap-1">
-              <span
-                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-[11px] ${
-                  s === step
-                    ? "border-accent bg-accent text-paper"
-                    : s < step
-                    ? "border-accent text-accent"
-                    : "border-line text-ink/40"
-                }`}
-              >
-                {s < step ? "✓" : s}
-              </span>
-              <span className={s <= step ? "text-ink" : "text-ink/40"}>
-                {STEP_LABELS[s]}
-              </span>
-              {i < 3 && <span className="mx-1 h-px flex-1 bg-line" />}
-            </li>
-          ))}
-        </ol>
-
-        {error && (
-          <div className="mb-6 rounded border border-rust/30 bg-rust/5 px-4 py-3 text-sm text-rust">
-            {error}
-          </div>
-        )}
-
-        {/* Step 1 */}
-        {step === 1 && (
-          <section className="space-y-4">
-            {sessionStatus === "loading" ? (
-              <p className="text-sm text-ink/50">Checking sign-in status…</p>
-            ) : sessionStatus !== "authenticated" ? (
-              <>
-                <p className="text-sm text-ink/60">
-                  Sign in with Google to link your resume and save your generated documents.
-                </p>
-                <button
-                  onClick={() => signIn("google")}
-                  className="flex items-center gap-2 rounded border border-line bg-surface px-4 py-2 text-sm font-medium hover:border-accent"
+          <ol className="mb-10 flex gap-1 font-mono text-xs uppercase tracking-wide">
+            {([1, 2, 3, 4] as Step[]).map((s, i) => (
+              <li key={s} className="flex flex-1 items-center gap-1">
+                <span
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-[11px] ${
+                    s === step
+                      ? "border-accent bg-accent text-paper"
+                      : s < step
+                      ? "border-accent text-accent"
+                      : "border-line text-ink/40"
+                  }`}
                 >
-                  Continue with Google
-                </button>
-              </>
-            ) : (
-              <>
-                <div className="flex items-center justify-between rounded border border-line bg-surface px-4 py-3">
-                  <div>
-                    <p className="text-sm font-medium">{session?.user?.email}</p>
-                    <p className="text-xs text-ink/50">
-                      {loadingUser ? "Setting up your account…" : "Signed in with Google"}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => signOut({ callbackUrl: "/" })}
-                    className="text-xs text-ink/50 underline underline-offset-4 hover:text-ink"
-                  >
-                    Sign out
-                  </button>
-                </div>
-                {hasResume && (
-                  <p className="text-xs text-ink/50">
-                    Welcome back! You can update your resume anytime from the sidebar.
-                  </p>
-                )}
-                <button
-                  onClick={() => {
-                    if (!ensureSubscription()) return;
-                    setStep(hasResume ? 3 : 2);
-                  }}
-                  disabled={loadingUser || !userId || hasResume === null}
-                  className="rounded bg-accent px-4 py-2 text-sm font-medium text-paper hover:bg-accentDark disabled:opacity-50"
-                >
-                  {loadingUser || hasResume === null ? "Setting up…" : "Continue"}
-                </button>
-              </>
-            )}
+                  {s < step ? "✓" : s}
+                </span>
+                <span className={s <= step ? "text-ink" : "text-ink/40"}>
+                  {STEP_LABELS[s]}
+                </span>
+                {i < 3 && <span className="mx-1 h-px flex-1 bg-line" />}
+              </li>
+            ))}
+          </ol>
 
-            {/* Demo video — shown regardless of sign-in status */}
-            <div className="mt-6">
-              <p className="mb-2 text-xl font-medium text-ink/70">Watch a demo:</p>
-              <video
-                className="w-full rounded border border-line"
-                controls
-                playsInline
-              >
-                <source
-                  src="https://fluxapply-public-assets.s3.ap-south-2.amazonaws.com/demo.mp4"
-                  type="video/mp4"
-                />
-                Your browser does not support the video tag.
-              </video>
+          {error && (
+            <div className="mb-6 rounded border border-rust/30 bg-rust/5 px-4 py-3 text-sm text-rust">
+              {error}
             </div>
+          )}
 
-            {/* Pricing — shown regardless of sign-in status */}
-            <div className="mt-10">
-              <p className="mb-3 font-mono text-xs uppercase tracking-[0.15em] text-ink/40">Pricing</p>
-              <div className="relative overflow-hidden rounded-lg border border-line bg-surface">
-                <div className="absolute inset-y-0 left-0 w-1 bg-accent" />
-                <div className="flex flex-col gap-6 px-6 py-6 pl-7 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p className="font-display text-xl text-ink">Monthly Plan</p>
-                    <p className="mt-1.5 max-w-sm text-sm leading-relaxed text-ink/60">
-                      Unlimited tailored resumes and cover letters, styled to match your original resume.
-                    </p>
-                    <ul className="mt-4 space-y-1.5">
-                      {["Unlimited generations", "Application history saved", "Cancel anytime"].map((item) => (
-                        <li key={item} className="flex items-center gap-2 text-xs text-ink/60">
-                          <svg
-                            viewBox="0 0 20 20"
-                            width="14"
-                            height="14"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            className="shrink-0 text-accentDark"
-                          >
-                            <path d="M4 10l4 4 8-8" />
-                          </svg>
-                          {item}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <div className="shrink-0 sm:border-l sm:border-line sm:pl-6">
-                    <div className="flex items-baseline gap-1.5">
-                      <span className="font-display text-4xl leading-none text-ink">₹299</span>
-                      <span className="text-sm text-ink/50">/mo</span>
+          {/* Step 1 */}
+          {step === 1 && (
+            <section className="space-y-4">
+              {sessionStatus === "loading" ? (
+                <p className="text-sm text-ink/50">Checking sign-in status…</p>
+              ) : sessionStatus !== "authenticated" ? (
+                <>
+                  <p className="text-sm text-ink/60">
+                    Sign in with Google to link your resume and save your generated documents.
+                  </p>
+                  <button
+                    onClick={() => signIn("google")}
+                    className="flex items-center gap-2 rounded border border-line bg-surface px-4 py-2 text-sm font-medium hover:border-accent"
+                  >
+                    Continue with Google
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between rounded border border-line bg-surface px-4 py-3">
+                    <div>
+                      <p className="text-sm font-medium">{session?.user?.email}</p>
+                      <p className="text-xs text-ink/50">
+                        {loadingUser ? "Setting up your account…" : "Signed in with Google"}
+                      </p>
                     </div>
-                    <p className="mt-1.5 text-xs text-ink/40">
-                      or{" "}
-                      <span className="font-medium text-ink/60">$2.99/mo</span>{" "}
-                      for international cards
-                    </p>
+                    <button
+                      onClick={() => signOut({ callbackUrl: "/" })}
+                      className="text-xs text-ink/50 underline underline-offset-4 hover:text-ink"
+                    >
+                      Sign out
+                    </button>
                   </div>
-                </div>
-              </div>
-            </div>
+                  {hasResume && (
+                    <p className="text-xs text-ink/50">
+                      Welcome back! You can update your resume anytime from the sidebar.
+                    </p>
+                  )}
 
-            {/* About FluxApply — required content for Google OAuth verification.
-                Visible without sign-in, on this same page. */}
-            <div className="mt-8">
-              <p className="mb-3 font-mono text-xs uppercase tracking-[0.15em] text-ink/40">About</p>
-              <div className="space-y-5 rounded-lg border border-line bg-surface px-6 py-6">
-                <div>
-                  <p className="font-display text-xl text-ink">About FluxApply</p>
-                  <p className="mt-2 text-sm leading-relaxed text-ink/70">
-                    FluxApply is a resume and cover letter tailoring tool for job seekers. Upload your
-                    resume once, point it at a job posting by URL or pasted text and FluxApply
-                    generates a tailored resume and cover letter for that role, in your original
-                    document&apos;s visual style, ready to download as a Word document.
-                  </p>
-                </div>
+                  {/* Free tier status for non-subscribers */}
+                  {!hasActiveSubscription() && freeTier && (
+                    <div className="rounded border border-line bg-surface px-4 py-3 text-sm">
+                      <p className="font-medium text-ink">Free tier — today&apos;s quota</p>
+                      <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                        <div className={`rounded px-2 py-1.5 ${freeTier.upload_used === 0 ? "bg-accent/10 text-accentDark" : "bg-line/30 text-ink/40"}`}>
+                          Resume upload: {freeTier.upload_used === 0 ? "Free" : "Used"}
+                        </div>
+                        <div className={`rounded px-2 py-1.5 ${freeTier.jd_used === 0 ? "bg-accent/10 text-accentDark" : "bg-line/30 text-ink/40"}`}>
+                          JD submit: {freeTier.jd_used === 0 ? "Free" : "Used"}
+                        </div>
+                        <div className={`rounded px-2 py-1.5 ${freeTier.generate_available ? "bg-accent/10 text-accentDark" : "bg-line/30 text-ink/40"}`}>
+                          Generate: {freeTier.generate_available ? "Free" : "Used"}
+                        </div>
+                      </div>
+                      {freeTier.resets_at && (
+                        <p className="mt-2 text-[11px] text-ink/40">
+                          Resets {new Date(freeTier.resets_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </p>
+                      )}
+                    </div>
+                  )}
 
-                <div className="border-t border-line pt-5">
-                  <p className="text-xs font-medium uppercase tracking-[0.1em] text-ink/40">
-                    Why we ask for Google sign-in
-                  </p>
-                  <p className="mt-2 text-sm leading-relaxed text-ink/70">
-                    We use your Google account only to verify your identity and to keep your resume,
-                    generated documents, and application history tied securely to your account. We
-                    request your name and email address for this purpose, and we don&apos;t use your
-                    Google data for anything else.
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-line pt-5 text-sm">
-                  <Link
-                    href="https://www.fluxapply.me/privacy"
-                    className="font-medium text-accentDark hover:text-accent"
-                  >
-                    Privacy Policy →
-                  </Link>
-                  <Link
-                    href="https://www.fluxapply.me/terms"
-                    className="font-medium text-accentDark hover:text-accent"
-                  >
-                    Terms and Conditions →
-                  </Link>
-                </div>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* Step 2 */}
-        {step === 2 && (
-          <section className="space-y-4">
-            <div>
-              <label htmlFor="resume" className="mb-1 block text-sm font-medium">
-                {updatingResume ? "Replace your resume (.pdf or .docx)" : "Upload your resume (.pdf or .docx)"}
-              </label>
-              <input
-                id="resume"
-                type="file"
-                accept=".pdf,.docx"
-                onChange={(e) => setFile(e.target.files?.[0] || null)}
-                className="focus-ring block w-full rounded border border-line bg-surface px-3 py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-accent/10 file:px-3 file:py-1.5 file:text-accentDark"
-              />
-              <p className="mt-1 text-xs text-ink/50">
-                We extract skills, experience, and projects from this file. It also sets the visual style for the generated resume.
-              </p>
-            </div>
-            <div className="flex gap-3">
-              <button
-                onClick={() => {
-                  if (updatingResume) {
-                    setUpdatingResume(false);
-                    setStep(previousStep);
-                  } else {
-                    setStep(1);
-                  }
-                }}
-                className="rounded border border-line px-4 py-2 text-sm text-ink/70 hover:bg-surface"
-              >
-                Back
-              </button>
-              <button
-                onClick={handleUploadResume}
-                disabled={uploadingResume}
-                className="rounded bg-accent px-4 py-2 text-sm font-medium text-paper hover:bg-accentDark disabled:opacity-50"
-              >
-                {uploadingResume ? "Uploading…" : "Upload and continue"}
-              </button>
-            </div>
-          </section>
-        )}
-
-        {/* Step 3 */}
-        {step === 3 && (
-          <section className="space-y-5">
-            {!needsPaste ? (
-              <>
-                <div>
-                  <label htmlFor="jdUrl" className="mb-1 block text-sm font-medium">
-                    Job posting URL
-                  </label>
-                  <input
-                    id="jdUrl"
-                    type="url"
-                    value={jdUrl}
-                    onChange={(e) => setJdUrl(e.target.value)}
-                    placeholder="https://company.com/careers/role"
-                    className="focus-ring w-full rounded border border-line bg-surface px-3 py-2 text-sm"
-                  />
-                </div>
-                <div className="flex items-center gap-3 text-xs text-ink/40">
-                  <span className="h-px flex-1 bg-line" />
-                  or
-                  <span className="h-px flex-1 bg-line" />
-                </div>
-                <div>
-                  <label htmlFor="jdPaste" className="mb-1 block text-sm font-medium">
-                    Paste the job description text
-                  </label>
-                  <textarea
-                    id="jdPaste"
-                    value={jdPasteText}
-                    onChange={(e) => setJdPasteText(e.target.value)}
-                    rows={6}
-                    placeholder="Paste the full job posting here (useful for LinkedIn/Indeed, which block scraping)"
-                    className="focus-ring w-full rounded border border-line bg-surface px-3 py-2 text-sm"
-                  />
-                </div>
-                <div className="flex gap-3">
-                  <button
-                    onClick={() => setStep(hasResume ? 1 : 2)}
-                    className="rounded border border-line px-4 py-2 text-sm text-ink/70 hover:bg-surface"
-                  >
-                    Back
-                  </button>
-                  <button
-                    onClick={handleSubmitJD}
-                    disabled={submittingJD}
-                    className="rounded bg-accent px-4 py-2 text-sm font-medium text-paper hover:bg-accentDark disabled:opacity-50"
-                  >
-                    {submittingJD ? "Reading job description…" : "Continue"}
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="rounded border border-accent/30 bg-accent/5 px-4 py-3 text-sm text-accentDark">
-                  {pasteMessage}
-                </div>
-                <div>
-                  <label htmlFor="jdPaste2" className="mb-1 block text-sm font-medium">
-                    Paste the job description text
-                  </label>
-                  <textarea
-                    id="jdPaste2"
-                    value={jdPasteText}
-                    onChange={(e) => setJdPasteText(e.target.value)}
-                    rows={8}
-                    className="focus-ring w-full rounded border border-line bg-surface px-3 py-2 text-sm"
-                  />
-                </div>
-                <div className="flex gap-3">
                   <button
                     onClick={() => {
-                      setNeedsPaste(false);
-                      setJdPasteText("");
+                      setStep(hasResume ? 3 : 2);
                     }}
-                    className="rounded border border-line px-4 py-2 text-sm text-ink/70 hover:bg-surface"
-                  >
-                    Back
-                  </button>
-                  <button
-                    onClick={handleResumePaste}
-                    disabled={submittingJD}
+                    disabled={loadingUser || !userId || hasResume === null}
                     className="rounded bg-accent px-4 py-2 text-sm font-medium text-paper hover:bg-accentDark disabled:opacity-50"
                   >
-                    {submittingJD ? "Reading job description…" : "Continue"}
+                    {loadingUser || hasResume === null ? "Setting up…" : "Continue"}
                   </button>
-                </div>
-              </>
-            )}
-          </section>
-        )}
+                </>
+              )}
 
-        {/* Step 4 */}
-        {step === 4 && (
-          <section className="space-y-6">
-            {refinedJD && (
-              <div className="flex items-center justify-between gap-3 rounded border border-line bg-surface px-4 py-3">
-                <div>
-                  <p className="font-display text-lg">{refinedJD.role_title}</p>
-                  <p className="text-sm text-ink/60">
-                    {refinedJD.company}
-                    {refinedJD.location ? ` · ${refinedJD.location}` : ""}
-                  </p>
-                </div>
-                {jdId && (
-                  <select
-                    value={applications.find((a) => a.jd_id === jdId)?.status ?? "not_applied"}
-                    onChange={(e) => handleStatusChange(jdId, e.target.value as ApplicationStatus)}
-                    className="focus-ring shrink-0 rounded border border-line bg-paper px-2 py-1.5 text-xs"
-                  >
-                    {APPLICATION_STATUSES.map((s) => (
-                      <option key={s.value} value={s.value}>
-                        {s.label}
-                      </option>
-                    ))}
-                  </select>
-                )}
+              {/* Demo video */}
+              <div className="mt-6">
+                <p className="mb-2 text-xl font-medium text-ink/70">Watch a demo:</p>
+                <video
+                  className="w-full rounded border border-line"
+                  controls
+                  playsInline
+                >
+                  <source
+                    src="https://fluxapply-public-assets.s3.ap-south-2.amazonaws.com/demo.mp4"
+                    type="video/mp4"
+                  />
+                  Your browser does not support the video tag.
+                </video>
               </div>
-            )}
 
-            {!result ? (
-              <button
-                onClick={handleGenerate}
-                disabled={generating}
-                className="rounded bg-accent px-4 py-2 text-sm font-medium text-paper hover:bg-accentDark disabled:opacity-50"
-              >
-                {generating
-                  ? "Tailoring resume and writing cover letter…"
-                  : "Generate resume and cover letter"}
-              </button>
-            ) : (
-              <div className="space-y-5">
-                <div className="space-y-3">
-                  <a
-                    href={result.resume_docx_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center justify-between rounded border border-line bg-surface px-4 py-3 text-sm hover:border-accent"
-                  >
-                    <span>Tailored resume</span>
-                    <span className="text-accentDark">Download →</span>
-                  </a>
-                  <a
-                    href={result.cover_letter_docx_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center justify-between rounded border border-line bg-surface px-4 py-3 text-sm hover:border-accent"
-                  >
-                    <span>Cover letter</span>
-                    <span className="text-accentDark">Download →</span>
-                  </a>
+              {/* Pricing */}
+              <div className="mt-10">
+                <p className="mb-3 font-mono text-xs uppercase tracking-[0.15em] text-ink/40">Pricing</p>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  {/* Free Tier */}
+                  <div className="relative overflow-hidden rounded-lg border border-line bg-surface">
+                    <div className="absolute inset-y-0 left-0 w-1 bg-ink/20" />
+                    <div className="px-6 py-6 pl-7">
+                      <p className="font-display text-xl text-ink">Free Tier</p>
+                      <p className="mt-1.5 text-sm leading-relaxed text-ink/60">
+                        Try FluxApply with a limited daily quota. No credit card required.
+                      </p>
+                      <ul className="mt-4 space-y-1.5">
+                        {[
+                          "1 resume upload (one-time only)",
+                          "1 job description per day",
+                          "1 tailored generation per day",
+                          "Quota resets every 24 hours",
+                        ].map((item) => (
+                          <li key={item} className="flex items-center gap-2 text-xs text-ink/60">
+                            <svg
+                              viewBox="0 0 20 20"
+                              width="14"
+                              height="14"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              className="shrink-0 text-ink/40"
+                            >
+                              <path d="M4 10l4 4 8-8" />
+                            </svg>
+                            {item}
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="mt-4 flex items-baseline gap-1.5">
+                        <span className="font-display text-3xl leading-none text-ink">₹0</span>
+                        <span className="text-sm text-ink/50">/mo</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Monthly Plan */}
+                  <div className="relative overflow-hidden rounded-lg border border-line bg-surface">
+                    <div className="absolute inset-y-0 left-0 w-1 bg-accent" />
+                    <div className="px-6 py-6 pl-7">
+                      <p className="font-display text-xl text-ink">Monthly Plan</p>
+                      <p className="mt-1.5 text-sm leading-relaxed text-ink/60">
+                        Unlimited tailored resumes and cover letters, styled to match your original resume.
+                      </p>
+                      <ul className="mt-4 space-y-1.5">
+                        {["Unlimited generations", "Application history saved", "Cancel anytime"].map((item) => (
+                          <li key={item} className="flex items-center gap-2 text-xs text-ink/60">
+                            <svg
+                              viewBox="0 0 20 20"
+                              width="14"
+                              height="14"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              className="shrink-0 text-accentDark"
+                            >
+                              <path d="M4 10l4 4 8-8" />
+                            </svg>
+                            {item}
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="mt-4 flex items-baseline gap-1.5">
+                        <span className="font-display text-3xl leading-none text-ink">₹299</span>
+                        <span className="text-sm text-ink/50">/mo</span>
+                      </div>
+                      <p className="mt-1 text-xs text-ink/40">
+                        or <span className="font-medium text-ink/60">$2.99/mo</span> for international cards
+                      </p>
+                    </div>
+                  </div>
                 </div>
+              </div>
 
-                {jdId && session?.idToken && (
-                  <div className="rounded border border-line p-4">
-                    <p className="mb-4 font-mono text-xs uppercase tracking-[0.15em] text-ink/40">
-                      Edit before you send it
+              {/* About FluxApply */}
+              <div className="mt-8">
+                <p className="mb-3 font-mono text-xs uppercase tracking-[0.15em] text-ink/40">About</p>
+                <div className="space-y-5 rounded-lg border border-line bg-surface px-6 py-6">
+                  <div>
+                    <p className="font-display text-xl text-ink">About FluxApply</p>
+                    <p className="mt-2 text-sm leading-relaxed text-ink/70">
+                      FluxApply is a resume and cover letter tailoring tool for job seekers. Upload your
+                      resume once, point it at a job posting by URL or pasted text and FluxApply
+                      generates a tailored resume and cover letter for that role, in your original
+                      document&apos;s visual style, ready to download as a Word document.
                     </p>
-                    <DocumentEditor
-                      token={session.idToken}
-                      jdId={jdId}
-                      initialResumeJson={result.tailored_resume}
-                      initialCoverLetterJson={result.cover_letter}
-                      resumeDocxUrl={result.resume_docx_url}
-                      coverLetterDocxUrl={result.cover_letter_docx_url}
-                      onUrlsUpdated={(urls) =>
-                        setResult((prev) => (prev ? { ...prev, ...urls } : prev))
-                      }
+                  </div>
+
+                  <div className="border-t border-line pt-5">
+                    <p className="text-xs font-medium uppercase tracking-[0.1em] text-ink/40">
+                      Why we ask for Google sign-in
+                    </p>
+                    <p className="mt-2 text-sm leading-relaxed text-ink/70">
+                      We use your Google account only to verify your identity and to keep your resume,
+                      generated documents, and application history tied securely to your account. We
+                      request your name and email address for this purpose, and we don&apos;t use your
+                      Google data for anything else.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-line pt-5 text-sm">
+                    <Link
+                      href="https://www.fluxapply.me/privacy"
+                      className="font-medium text-accentDark hover:text-accent"
+                    >
+                      Privacy Policy →
+                    </Link>
+                    <Link
+                      href="https://www.fluxapply.me/terms"
+                      className="font-medium text-accentDark hover:text-accent"
+                    >
+                      Terms and Conditions →
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* Step 2 */}
+          {step === 2 && (
+            <section className="space-y-4">
+              <div>
+                <label htmlFor="resume" className="mb-1 block text-sm font-medium">
+                  {updatingResume ? "Replace your resume (.pdf or .docx)" : "Upload your resume (.pdf or .docx)"}
+                </label>
+                <input
+                  id="resume"
+                  type="file"
+                  accept=".pdf,.docx"
+                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                  className="focus-ring block w-full rounded border border-line bg-surface px-3 py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-accent/10 file:px-3 file:py-1.5 file:text-accentDark"
+                />
+                <p className="mt-1 text-xs text-ink/50">
+                  We extract skills, experience, and projects from this file. It also sets the visual style for the generated resume.
+                </p>
+              </div>
+              {!hasActiveSubscription() && freeTier && freeTier.upload_used > 0 && !updatingResume && (
+                <div className="rounded border border-rust/30 bg-rust/5 px-4 py-3 text-sm text-rust">
+                  Your free resume upload has already been used. Subscribe to update or replace your resume.
+                </div>
+              )}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    if (updatingResume) {
+                      setUpdatingResume(false);
+                      setStep(previousStep);
+                    } else {
+                      setStep(1);
+                    }
+                  }}
+                  className="rounded border border-line px-4 py-2 text-sm text-ink/70 hover:bg-surface"
+                >
+                  Back
+                </button>
+                <button
+                  onClick={handleUploadResume}
+                  disabled={uploadingResume || (!hasActiveSubscription() && !!freeTier && freeTier.upload_used > 0 && !updatingResume)}
+                  className="rounded bg-accent px-4 py-2 text-sm font-medium text-paper hover:bg-accentDark disabled:opacity-50"
+                >
+                  {uploadingResume ? "Uploading…" : "Upload and continue"}
+                </button>
+              </div>
+            </section>
+          )}
+
+          {/* Step 3 */}
+          {step === 3 && (
+            <section className="space-y-5">
+              {!needsPaste ? (
+                <>
+                  <div>
+                    <label htmlFor="jdUrl" className="mb-1 block text-sm font-medium">
+                      Job posting URL
+                    </label>
+                    <input
+                      id="jdUrl"
+                      type="url"
+                      value={jdUrl}
+                      onChange={(e) => setJdUrl(e.target.value)}
+                      placeholder="https://company.com/careers/role"
+                      className="focus-ring w-full rounded border border-line bg-surface px-3 py-2 text-sm"
                     />
                   </div>
-                )}
-              </div>
-            )}
-          </section>
-        )}
+                  <div className="flex items-center gap-3 text-xs text-ink/40">
+                    <span className="h-px flex-1 bg-line" />
+                    or
+                    <span className="h-px flex-1 bg-line" />
+                  </div>
+                  <div>
+                    <label htmlFor="jdPaste" className="mb-1 block text-sm font-medium">
+                      Paste the job description text
+                    </label>
+                    <textarea
+                      id="jdPaste"
+                      value={jdPasteText}
+                      onChange={(e) => setJdPasteText(e.target.value)}
+                      rows={6}
+                      placeholder="Paste the full job posting here (useful for LinkedIn/Indeed, which block scraping)"
+                      className="focus-ring w-full rounded border border-line bg-surface px-3 py-2 text-sm"
+                    />
+                  </div>
+                  {!hasActiveSubscription() && freeTier && freeTier.jd_used > 0 && (
+                    <div className="rounded border border-rust/30 bg-rust/5 px-4 py-3 text-sm text-rust">
+                      Your free job-description submission for today has been used. Subscribe for unlimited access.
+                    </div>
+                  )}
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setStep(hasResume ? 1 : 2)}
+                      className="rounded border border-line px-4 py-2 text-sm text-ink/70 hover:bg-surface"
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={handleSubmitJD}
+                      disabled={submittingJD || (!hasActiveSubscription() && !!freeTier && freeTier.jd_used > 0)}
+                      className="rounded bg-accent px-4 py-2 text-sm font-medium text-paper hover:bg-accentDark disabled:opacity-50"
+                    >
+                      {submittingJD ? "Reading job description…" : "Continue"}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="rounded border border-accent/30 bg-accent/5 px-4 py-3 text-sm text-accentDark">
+                    {pasteMessage}
+                  </div>
+                  <div>
+                    <label htmlFor="jdPaste2" className="mb-1 block text-sm font-medium">
+                      Paste the job description text
+                    </label>
+                    <textarea
+                      id="jdPaste2"
+                      value={jdPasteText}
+                      onChange={(e) => setJdPasteText(e.target.value)}
+                      rows={8}
+                      className="focus-ring w-full rounded border border-line bg-surface px-3 py-2 text-sm"
+                    />
+                  </div>
+                  {!hasActiveSubscription() && freeTier && freeTier.jd_used > 0 && (
+                    <div className="rounded border border-rust/30 bg-rust/5 px-4 py-3 text-sm text-rust">
+                      Your free job-description submission for today has been used. Subscribe for unlimited access.
+                    </div>
+                  )}
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => {
+                        setNeedsPaste(false);
+                        setJdPasteText("");
+                      }}
+                      className="rounded border border-line px-4 py-2 text-sm text-ink/70 hover:bg-surface"
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={handleResumePaste}
+                      disabled={submittingJD || (!hasActiveSubscription() && !!freeTier && freeTier.jd_used > 0)}
+                      className="rounded bg-accent px-4 py-2 text-sm font-medium text-paper hover:bg-accentDark disabled:opacity-50"
+                    >
+                      {submittingJD ? "Reading job description…" : "Continue"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </section>
+          )}
+
+          {/* Step 4 */}
+          {step === 4 && (
+            <section className="space-y-6">
+              {refinedJD && (
+                <div className="flex items-center justify-between gap-3 rounded border border-line bg-surface px-4 py-3">
+                  <div>
+                    <p className="font-display text-lg">{refinedJD.role_title}</p>
+                    <p className="text-sm text-ink/60">
+                      {refinedJD.company}
+                      {refinedJD.location ? ` · ${refinedJD.location}` : ""}
+                    </p>
+                  </div>
+                  {jdId && (
+                    <select
+                      value={applications.find((a) => a.jd_id === jdId)?.status ?? "not_applied"}
+                      onChange={(e) => handleStatusChange(jdId, e.target.value as ApplicationStatus)}
+                      className="focus-ring shrink-0 rounded border border-line bg-paper px-2 py-1.5 text-xs"
+                    >
+                      {APPLICATION_STATUSES.map((s) => (
+                        <option key={s.value} value={s.value}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              )}
+
+              {!result ? (
+                <>
+                  {!hasActiveSubscription() && freeTier && !freeTier.generate_available && (
+                    <div className="rounded border border-rust/30 bg-rust/5 px-4 py-3 text-sm text-rust">
+                      Your free generation for today has been used. Subscribe to generate unlimited tailored resumes and cover letters.
+                    </div>
+                  )}
+                  <button
+                    onClick={handleGenerate}
+                    disabled={generating || (!hasActiveSubscription() && !!freeTier && !freeTier.generate_available)}
+                    className="rounded bg-accent px-4 py-2 text-sm font-medium text-paper hover:bg-accentDark disabled:opacity-50"
+                  >
+                    {generating
+                      ? "Tailoring resume and writing cover letter…"
+                      : "Generate resume and cover letter"}
+                  </button>
+                </>
+              ) : (
+                <div className="space-y-5">
+                  <div className="space-y-3">
+                    <a
+                      href={result.resume_docx_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center justify-between rounded border border-line bg-surface px-4 py-3 text-sm hover:border-accent"
+                    >
+                      <span>Tailored resume</span>
+                      <span className="text-accentDark">Download →</span>
+                    </a>
+                    <a
+                      href={result.cover_letter_docx_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center justify-between rounded border border-line bg-surface px-4 py-3 text-sm hover:border-accent"
+                    >
+                      <span>Cover letter</span>
+                      <span className="text-accentDark">Download →</span>
+                    </a>
+                  </div>
+
+                  {jdId && session?.idToken && (
+                    <div className="rounded border border-line p-4">
+                      <p className="mb-4 font-mono text-xs uppercase tracking-[0.15em] text-ink/40">
+                        Edit before you send it
+                      </p>
+                      <DocumentEditor
+                        token={session.idToken}
+                        jdId={jdId}
+                        initialResumeJson={result.tailored_resume}
+                        initialCoverLetterJson={result.cover_letter}
+                        resumeDocxUrl={result.resume_docx_url}
+                        coverLetterDocxUrl={result.cover_letter_docx_url}
+                        onUrlsUpdated={(urls) =>
+                          setResult((prev) => (prev ? { ...prev, ...urls } : prev))
+                        }
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
         </main>
       </div>
     </div>

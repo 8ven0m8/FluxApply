@@ -45,7 +45,7 @@ export interface JDSubmitResponse {
   status: "done" | "needs_paste";
   jd_id: string;
   message?: string | null;
-  refined_jd?: string | null; // JSON string
+  refined_jd?: string | null;
 }
 
 export interface GenerateResponse {
@@ -81,13 +81,23 @@ export interface ResumeProject {
   technologies: string[];
 }
 
+export interface AchievementLink {
+  label: string;
+  url: string;
+}
+
+export interface Achievement {
+  text: string;
+  links: AchievementLink[];
+}
+
 export interface TailoredResumeContent {
   summary: string;
   details: ResumeDetails;
   skills: string[];
   projects: ResumeProject[];
   experience: ResumeExperience[];
-  achievements: string[];
+  achievements: Achievement[];
 }
 
 export interface CoverLetterHeader {
@@ -112,9 +122,6 @@ export interface CoverLetterBodyParagraph {
 export interface CoverLetter {
   header: CoverLetterHeader;
   employers_info: CoverLetterEmployer;
-  // These two field names match backend/schemas.py exactly (including the
-  // slightly odd naming) — `ation` is the salutation ("Dear ..."),
-  // `openingsalut_paragraph` is the opening paragraph.
   ation: string;
   openingsalut_paragraph: string;
   body_paragraphs: CoverLetterBodyParagraph[];
@@ -143,12 +150,14 @@ export interface ApplicationSummary {
   status: ApplicationStatus;
 }
 
-/**
- * Verifies the caller's Google ID token against the backend and returns
- * the deterministic user_id derived from the verified email. Replaces the
- * old createUser(email) — the backend no longer accepts a client-supplied
- * email or user_id anywhere; every endpoint derives it from `token`.
- */
+export interface FreeTierStatus {
+  upload_used: number;
+  jd_used: number;
+  generate_used: number;
+  generate_available: boolean;
+  resets_at: string | null;
+}
+
 export async function whoAmI(token: string): Promise<{ user_id: string }> {
   const res = await fetch(`${API_BASE}/users`, {
     method: "POST",
@@ -244,11 +253,6 @@ export async function updateApplicationStatus(
   return handle(res);
 }
 
-/**
- * Fetches the already-generated resume content for a past application
- * (no LLM call — reads what's already stored) so the editor can open it
- * without going through /generate again.
- */
 export async function getResumeContent(
   token: string,
   jdId: string
@@ -271,11 +275,6 @@ export async function getCoverLetterContent(
   return handle(res);
 }
 
-/**
- * Re-renders the resume .docx from edited content. No LLM call — this
- * re-runs the same deterministic docx-formatting step /generate uses,
- * just on whatever content the user submits, and persists the edit.
- */
 export async function renderResume(
   token: string,
   jdId: string,
@@ -308,13 +307,18 @@ export interface SubscriptionStatus {
   razorpay_subscription_id: string | null;
   razorpay_customer_id: string | null;
   plan_id: string | null;
-  // True once cancellation has been scheduled but the current paid period
-  // hasn't ended yet — access stays on, it just won't renew.
   cancel_at_period_end: boolean;
 }
 
 export async function getSubscriptionStatus(token: string): Promise<SubscriptionStatus> {
   const res = await fetch(`${API_BASE}/subscription/status`, {
+    headers: authHeaders(token),
+  });
+  return handle(res);
+}
+
+export async function getFreeTierStatus(token: string): Promise<FreeTierStatus> {
+  const res = await fetch(`${API_BASE}/free-tier/status`, {
     headers: authHeaders(token),
   });
   return handle(res);
@@ -333,9 +337,6 @@ export async function createRazorpaySubscription(
   return handle(res);
 }
 
-// Schedules cancellation at the end of the current billing period — access
-// stays on and the response reflects that immediately (the backend updates
-// this synchronously, it doesn't wait on a webhook), so no polling needed.
 export async function cancelRazorpaySubscription(
   token: string
 ): Promise<SubscriptionStatus> {
