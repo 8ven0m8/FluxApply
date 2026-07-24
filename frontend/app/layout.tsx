@@ -1,6 +1,10 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import "./globals.css";
 import Providers from "./providers";
+import GoogleAnalytics from "./google-analytics";
+
+const GA_ID = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID!;
 
 export const metadata: Metadata = {
   title: "FluxApply",
@@ -15,17 +19,33 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="min-h-screen bg-paper text-ink antialiased">
-        {/*
-          Runs before React hydrates so the correct theme is applied on the
-          very first paint — without this, the page would flash light mode
-          for a moment before switching to dark.
-        */}
+        {/* Theme script */}
         <script
           dangerouslySetInnerHTML={{
             __html: `(function(){try{var t=localStorage.getItem("theme");var dark=t?t==="dark":window.matchMedia("(prefers-color-scheme: dark)").matches;if(dark)document.documentElement.classList.add("dark");}catch(e){}})();`,
           }}
         />
-        <Providers>{children}</Providers>
+
+        <Providers>
+          <GoogleAnalytics />
+          {children}
+        </Providers>
+
+        {/* Google Analytics */}
+        <Script
+          src={`https://www.googletagmanager.com/gtag/js?id=${GA_ID}`}
+          strategy="afterInteractive"
+        />
+
+        <Script id="google-analytics" strategy="afterInteractive">
+          {`
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            window.gtag = gtag;
+            gtag('js', new Date());
+            gtag('config', '${GA_ID}');
+          `}
+        </Script>
       </body>
     </html>
   );
