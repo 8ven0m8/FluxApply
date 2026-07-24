@@ -7,9 +7,10 @@ Detailed section instructions:
 - Summary: As described in the schema, produce a short 2-3 sentence summary for the resume
 - details: Dont change anything, fill it exactly as provided
 - skills: Put relevant skills even if its slightly relevant. Dont put anything that is not at all relevant.
-- projects: Fill up the details exactly as provided but for the description part, tailor it according to the context of job description. If you think the description is fine and doesn't need tailoring then just put it as it is.
+- projects: Fill up the details exactly as provided but for the description part, tailor it according to the context of job description. If you think the description is fine and doesn't need tailoring then just put it as it is. NEVER drop, rename, or alter the "links" of a project — copy them over exactly as given.
 - experience: Dont change anything, fill it exactly as provided
-- achievements: Dont change anything, fill it exactly as provided
+- achievements: Dont change anything, fill it exactly as provided, including their "links" — copy them over exactly as given.
+- publications: Dont change anything, fill it exactly as provided, including their "link" — copy it over exactly as given.
 """
 
 SYSTEM_PROMPT_FOR_COVER_LETTER_GENERATION = """
@@ -166,8 +167,8 @@ Extraction guidelines:
     - Phone: Extract the candidate's phone number, preserving the original format (including country code if present).
     - Address: Extract the candidate's residential or mailing address if explicitly stated. Do not infer a city/country from context (e.g., phone country code or institution location) if no address is actually written.
     - Profile URLs: Extract ONLY the candidate's core identity/profile links — their own LinkedIn, GitHub, portfolio/personal website, Kaggle, LeetCode, HuggingFace, Codeforces, HackerRank, Medium, or similar profile pages. These are links that represent the candidate's overall online presence, not links tied to a single project or achievement.
-    - Reference URLs: Extract all OTHER URLs found anywhere in the resume that are not core profile links — including individual project repository links, deployed app/demo links, certification or credential links, video demonstrations, published papers, datasets, or any other supporting link tied to a specific project, certification, or achievement.
-    - If a section titled "PROFILE LINKS" is provided separately with raw URLs, use those as the authoritative source for matching label-only mentions (e.g. "LinkedIn" as plain text with no URL) found elsewhere in the resume — classify each into profile_urls or reference_urls based on what it actually links to, not just because it appeared in that injected section.
+    - Reference URLs: This is a fallback bucket only. A link tied to a specific project belongs on that Project's own "links" field (see below), and a link tied to a specific achievement/certification belongs on that Achievement's own "links" field (see below) — NOT here. Only put a non-profile URL in reference_urls if you genuinely cannot tell which project, achievement, or publication it belongs to.
+    - If a section titled "PROFILE LINKS" is provided separately with raw URLs, use those as the authoritative source for matching label-only mentions (e.g. "LinkedIn" as plain text with no URL, or a link icon/button next to a project title with no visible URL text) found elsewhere in the resume — match each one to the specific project/achievement/profile it sits next to, rather than defaulting it to reference_urls.
     - Institutions: Extract all educational institutions attended, including schools, colleges, universities, and other training institutions, exactly as named in the resume.
     - Educations: Extract all the degrees obtained by the candidate along with CGPA/percentage or any other metric of evaulation. If separated by comma, its generally 2 different degrees
 - Skills
@@ -180,6 +181,7 @@ Extraction guidelines:
         - Project name
         - Description (if provided)
         - Technologies used — extract ALL technologies, frameworks, libraries, tools, algorithms, or platforms mentioned anywhere in that project's description, not just ones in a separate "tech used" line. If the skill/tool/algorithm is named within the description text itself, include it here even if it's not repeated in a dedicated list.
+        - Links — extract every URL that appears next to, under, or as part of that project's title/heading line (e.g. "Github", "Demo", "Live", "FastAPI", "Video", "Dataset"). Give each a short label taken from its visible text, and keep them attached to this specific project — do not move them to reference_urls.
 - Experience (If no experience section is found, DO NOT INVENT YOUR OWN)
     - Extract every professional experience, internship, freelance role, research position, teaching position, or other work experience.
     - For each experience, include:
@@ -188,7 +190,11 @@ Extraction guidelines:
         - Employment dates
         - Description of responsibilities or achievements (if provided)
 - Achievements
-    - Extract all achievements, awards, certifications, scholarships, honors, publications, competition results, and other notable accomplishments as separate list items, splitting any comma-separated or run-on groupings into individual entries.
+    - Extract all achievements, awards, certifications, scholarships, honors, competition results, and other notable accomplishments (but NOT research papers/publications — see Publications below) as separate list items, splitting any comma-separated or run-on groupings into individual entries.
+    - For each achievement, also extract any verification/certificate/credential link(s) that appear on that same line, with a short label taken from the certificate's visible name. A single line can legitimately contain several separately-linked certifications (e.g. a Kaggle line listing five certificates) — capture each as its own labeled link under that one achievement entry, don't drop any of them.
+- Publications
+    - Extract every research paper, preprint, or academic publication the candidate authored or co-authored, wherever it appears in the resume (a dedicated "Publications"/"Research" section, or mixed into achievements/projects).
+    - For each, include the title, venue/journal/conference (if stated), date (if stated), author list (if stated), link/DOI (if stated), and a brief description (if provided). Do not fabricate any of these fields — leave null if not stated.
 
 Output requirements:
 

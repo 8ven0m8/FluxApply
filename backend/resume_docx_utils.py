@@ -23,7 +23,7 @@ from io import BytesIO
 
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
@@ -227,8 +227,8 @@ def _add_bottom_border(paragraph, color, size=6):
 
 def _section_heading(doc, text, style):
     p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(10)
-    p.paragraph_format.space_after = Pt(4)
+    p.paragraph_format.space_before = Pt(8)
+    p.paragraph_format.space_after = Pt(3)
     run = p.add_run(text.upper())
     run.bold = True
     run.font.size = Pt(style["heading_size"])
@@ -238,7 +238,7 @@ def _section_heading(doc, text, style):
     return p
 
 
-def _hyperlink(paragraph, url, text, color="0563C1", underline=True):
+def _hyperlink(paragraph, url, text, color="0563C1", underline=True, size_pt=None):
     part = paragraph.part
     r_id = part.relate_to(
         url,
@@ -257,6 +257,10 @@ def _hyperlink(paragraph, url, text, color="0563C1", underline=True):
         u = OxmlElement("w:u")
         u.set(qn("w:val"), "single")
         rPr.append(u)
+    if size_pt is not None:
+        sz = OxmlElement("w:sz")
+        sz.set(qn("w:val"), str(int(size_pt * 2)))  # half-points
+        rPr.append(sz)
     new_run.append(rPr)
     t = OxmlElement("w:t")
     t.text = text
@@ -277,6 +281,48 @@ def _label_from_url(url):
         return "HuggingFace"
     return url.split("//")[-1].split("/")[0]
 
+def _right_tab_position(doc, style):
+    section = doc.sections[0]
+    usable = section.page_width - section.left_margin - section.right_margin
+    return usable
+
+
+def _add_right_tab(paragraph, doc, style):
+    """Adds a right-aligned tab stop at the page's usable-width edge, so a
+    run added after '\t' lands flush against the right margin — used to put
+    project/date info on the same line as a title without a second paragraph."""
+    paragraph.paragraph_format.tab_stops.add_tab_stop(
+        _right_tab_position(doc, style), WD_TAB_ALIGNMENT.RIGHT
+    )
+
+
+def _append_links_inline(paragraph, links, style, size_delta=-1.5, prefix="  "):
+    """
+    Appends pipe-separated labeled hyperlinks to the END of an existing
+    paragraph (same line), instead of starting a new paragraph/line. Used to
+    keep project and achievement links from costing an extra line each.
+    """
+    if not links:
+        return
+    size_pt = style["body_size"] + size_delta
+    first = True
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        url = link.get("url")
+        if not url:
+            continue
+        label = link.get("label") or _label_from_url(url)
+        if first:
+            sep_run = paragraph.add_run(prefix)
+            sep_run.font.size = Pt(size_pt)
+        else:
+            sep_run = paragraph.add_run("  |  ")
+            sep_run.font.size = Pt(size_pt)
+        _hyperlink(paragraph, url, label, size_pt=size_pt)
+        first = False
+
+
 def _ensure_list(value):
     if value is None:
         return []
@@ -295,6 +341,7 @@ def build_resume_docx(tailored_resume: dict, style: dict = None) -> bytes:
     experience = tailored_resume.get("experience", [])
     projects = tailored_resume.get("projects", [])
     achievements = tailored_resume.get("achievements", [])
+    publications = tailored_resume.get("publications", [])
 
     doc = Document()
     _set_margins(doc, style["margin_in"])
@@ -394,10 +441,16 @@ def build_resume_docx(tailored_resume: dict, style: dict = None) -> bytes:
             run.bold = True
             run.font.size = Pt(style["body_size"] + 0.5)
 
+            links = proj.get("links", [])
+            if links:
+                _add_right_tab(title_p, doc, style)
+                title_p.add_run("\t")
+                _append_links_inline(title_p, links, style, prefix="")
+
             tech = proj.get("technologies", [])
             if tech:
                 tech_p = doc.add_paragraph()
-                tech_p.paragraph_format.space_after = Pt(2)
+                tech_p.paragraph_format.space_after = Pt(1)
                 tech_run = tech_p.add_run(" | ".join(tech))
                 tech_run.italic = True
                 tech_run.font.size = Pt(style["body_size"] - 1)
@@ -406,15 +459,52 @@ def build_resume_docx(tailored_resume: dict, style: dict = None) -> bytes:
             desc = proj.get("description", "")
             if desc:
                 desc_p = doc.add_paragraph()
-                desc_p.paragraph_format.space_after = Pt(8)
+                desc_p.paragraph_format.space_after = Pt(6)
                 desc_p.add_run(desc).font.size = Pt(style["body_size"])
 
     if achievements:
         _section_heading(doc, "Achievements", style)
         for ach in achievements:
+            # Backward compatible: older stored data may have plain strings
+            # instead of {"text": ..., "links": [...]}.
+            if isinstance(ach, dict):
+                text = ach.get("text", "")
+                links = ach.get("links", [])
+            else:
+                text, links = str(ach), []
+
             bp = doc.add_paragraph(style="List Bullet" if style["use_bullets"] else "Normal")
             bp.paragraph_format.space_after = Pt(2)
-            bp.add_run(("• " if not style["use_bullets"] else "") + ach).font.size = Pt(style["body_size"])
+            run = bp.add_run(("• " if not style["use_bullets"] else "") + text)
+            run.font.size = Pt(style["body_size"])
+            _append_links_inline(bp, links, style)
+
+    if publications:
+        _section_heading(doc, "Publications", style)
+        for pub in publications:
+            title_p = doc.add_paragraph()
+            title_p.paragraph_format.space_after = Pt(1)
+            run = title_p.add_run(pub.get("title", ""))
+            run.bold = True
+            run.font.size = Pt(style["body_size"] + 0.5)
+
+            meta_bits = [b for b in [pub.get("venue"), pub.get("date"), pub.get("authors")] if b]
+            if meta_bits:
+                _add_right_tab(title_p, doc, style)
+                title_p.add_run("\t")
+                meta_run = title_p.add_run(" | ".join(meta_bits))
+                meta_run.italic = True
+                meta_run.font.size = Pt(style["body_size"] - 1)
+
+            if pub.get("link"):
+                link_p = doc.add_paragraph()
+                link_p.paragraph_format.space_after = Pt(1)
+                _append_links_inline(link_p, [{"label": "Link", "url": pub["link"]}], style, prefix="")
+
+            if pub.get("description"):
+                desc_p = doc.add_paragraph()
+                desc_p.paragraph_format.space_after = Pt(6)
+                desc_p.add_run(pub["description"]).font.size = Pt(style["body_size"])
 
     buf = BytesIO()
     doc.save(buf)

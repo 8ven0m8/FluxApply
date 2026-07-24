@@ -640,6 +640,98 @@ export default function Home() {
                 Your browser does not support the video tag.
               </video>
             </div>
+
+            {/* Pricing — shown regardless of sign-in status */}
+            <div className="mt-10">
+              <p className="mb-3 font-mono text-xs uppercase tracking-[0.15em] text-ink/40">Pricing</p>
+              <div className="relative overflow-hidden rounded-lg border border-line bg-surface">
+                <div className="absolute inset-y-0 left-0 w-1 bg-accent" />
+                <div className="flex flex-col gap-6 px-6 py-6 pl-7 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="font-display text-xl text-ink">Monthly Plan</p>
+                    <p className="mt-1.5 max-w-sm text-sm leading-relaxed text-ink/60">
+                      Unlimited tailored resumes and cover letters, styled to match your original resume.
+                    </p>
+                    <ul className="mt-4 space-y-1.5">
+                      {["Unlimited generations", "Application history saved", "Cancel anytime"].map((item) => (
+                        <li key={item} className="flex items-center gap-2 text-xs text-ink/60">
+                          <svg
+                            viewBox="0 0 20 20"
+                            width="14"
+                            height="14"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className="shrink-0 text-accentDark"
+                          >
+                            <path d="M4 10l4 4 8-8" />
+                          </svg>
+                          {item}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div className="shrink-0 sm:border-l sm:border-line sm:pl-6">
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="font-display text-4xl leading-none text-ink">₹299</span>
+                      <span className="text-sm text-ink/50">/mo</span>
+                    </div>
+                    <p className="mt-1.5 text-xs text-ink/40">
+                      or{" "}
+                      <span className="font-medium text-ink/60">$2.99/mo</span>{" "}
+                      for international cards
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* About FluxApply — required content for Google OAuth verification.
+                Visible without sign-in, on this same page. */}
+            <div className="mt-8">
+              <p className="mb-3 font-mono text-xs uppercase tracking-[0.15em] text-ink/40">About</p>
+              <div className="space-y-5 rounded-lg border border-line bg-surface px-6 py-6">
+                <div>
+                  <p className="font-display text-xl text-ink">About FluxApply</p>
+                  <p className="mt-2 text-sm leading-relaxed text-ink/70">
+                    FluxApply is a resume and cover letter tailoring tool for job seekers. Upload your
+                    resume once, point it at a job posting by URL or pasted text and FluxApply
+                    generates a tailored resume and cover letter for that role, in your original
+                    document&apos;s visual style, ready to download as a Word document.
+                  </p>
+                </div>
+
+                <div className="border-t border-line pt-5">
+                  <p className="text-xs font-medium uppercase tracking-[0.1em] text-ink/40">
+                    Why we ask for Google sign-in
+                  </p>
+                  <p className="mt-2 text-sm leading-relaxed text-ink/70">
+                    We use your Google account only to verify your identity and to keep your resume,
+                    generated documents, and application history tied securely to your account. We
+                    request your name and email address for this purpose, and we don&apos;t use your
+                    Google data for anything else.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-line pt-5 text-sm">
+                  <Link
+                    href="https://www.fluxapply.me/privacy"
+                    className="font-medium text-accentDark hover:text-accent"
+                  >
+                    Privacy Policy →
+                  </Link>
+                  <Link
+                    href="https://www.fluxapply.me/terms"
+                    className="font-medium text-accentDark hover:text-accent"
+                  >
+                    Terms and Conditions →
+                  </Link>
+                </div>
+              </div>
+            </div>
           </section>
         )}
 

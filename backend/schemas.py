@@ -45,17 +45,39 @@ class Experience(BaseModel):
     dates: str | None = None
     description: str | None = None
 
+class ProjectLink(BaseModel):
+    label: str = Field(description="Short label for the link, e.g. 'Github', 'Demo', 'Live', 'FastAPI', 'Dataset', 'Video'.")
+    url: str = Field(description="The URL itself.")
+
 class Project(BaseModel):
     title: str
     description: str | None = None
     technologies: list[str] = Field(default_factory=list, description="Please mention all the relevant technologies used to make the project, go through the description and figure out yourself as well.")
+    links: list[ProjectLink] = Field(default_factory=list, description="All links tied specifically to this project — e.g. its Github repo, a live/deployed demo, a video walkthrough, or a dataset — each with a short label. Do NOT include the candidate's core profile links (LinkedIn/GitHub-home/Kaggle-home/etc.) here, only links that point at this specific project.")
+
+class AchievementLink(BaseModel):
+    label: str = Field(description="Short label for the link, e.g. the certificate or credential name.")
+    url: str = Field(description="The URL itself.")
+
+class Achievement(BaseModel):
+    text: str = Field(description="The achievement, award, certification, scholarship, honor, or competition result as stated.")
+    links: list[AchievementLink] = Field(default_factory=list, description="Any verification/certificate/credential links tied to this achievement. Some resumes group several certifications with individual links on a single line — capture each as its own labeled link here.")
+
+class Publication(BaseModel):
+    title: str = Field(description="Title of the research paper, preprint, or publication.")
+    venue: str | None = Field(default=None, description="Journal, conference, or venue where it was published, if stated.")
+    date: str | None = Field(default=None, description="Publication date or year, if stated.")
+    authors: str | None = Field(default=None, description="Author list as stated in the resume, if provided.")
+    link: str | None = Field(default=None, description="URL/DOI link to the paper, if provided.")
+    description: str | None = Field(default=None, description="Brief description of the paper's contribution, if provided.")
 
 class ResumeFact(BaseModel):
     details: Details = Field(description="Personal, contact, profile, and educational information of the candidate.")
     skills: list[str] = Field(default_factory=list, description="All technical and professional skills mentioned in the resume, including programming languages, frameworks, libraries, tools, databases, cloud platforms, operating systems, and other relevant technologies.")
-    projects: list[Project] = Field(default_factory=list, description="All projects mentioned in the resume. Include the project name, description, and technologies used if available.")
+    projects: list[Project] = Field(default_factory=list, description="All projects mentioned in the resume. Include the project name, description, technologies used, and any links tied to that project if available.")
     experience: list[Experience] = Field(default_factory=list, description="All professional experiences mentioned in the resume. Include the company name, job role, employment dates, and a brief description of responsibilities or accomplishments if provided.")
-    achievements: list[str] = Field(default_factory=list, description="All achievements, awards, certifications, scholarships, recognitions, competition results, publications, or other notable accomplishments mentioned in the resume.")
+    achievements: list[Achievement] = Field(default_factory=list, description="All achievements, awards, certifications, scholarships, recognitions, or competition results mentioned in the resume, along with any verification links.")
+    publications: list[Publication] = Field(default_factory=list, description="All research papers, preprints, or academic publications authored or co-authored by the candidate.")
 
 ############################## Tailored content generator schemas ############################
 # Generating resume
@@ -63,9 +85,10 @@ class TailoredResumeContent(BaseModel):
     summary: str = Field(description="A short resume summary of about 2-3 sentences focusing on the role that is mentioned in job description, do not invent any details. You can only use details provided in the resume. Mention the word 'Aspiring' infront of the job role which the client is applying for if and only if client has no experience in that role else ignore this. keep descriptions concise, avoid adding descriptive filler adjectives. One more important thing is that it should read more naturally.")
     details: Details = Field(description="Personal, contact, profile, and educational information of the candidate.")
     skills: list[str] = Field(default_factory=list, description="A subset of the skills from the original resume's skills list that are relevant to the job description. You MUST NOT add, infer, or include any skill, tool, or technology that is not verbatim present in the original skills list, even if it seems implied by the projects, experience, or job description. For example, if 'Natural Language Processing' or 'Prompt Engineering' or 'Google Cloud' are not explicitly listed in the original skills, do not include them, even if the candidate's projects involve NLP or cloud work. Only reorder or filter the existing list — never expand it.")
-    projects: list[Project] = Field(default_factory=list, description="All projects mentioned in the resume. Include the project name, description, and technologies used if available. Tailor the description so that it fits the job description provided. Do not invent your own details.")
+    projects: list[Project] = Field(default_factory=list, description="All projects mentioned in the resume. Include the project name, description, technologies used, and its links exactly as provided if available. Tailor the description so that it fits the job description provided. Do not invent your own details, and do not drop or alter the links.")
     experience: list[Experience] = Field(default_factory=list, description="All professional experiences mentioned in the resume. Include the company name, job role, employment dates, and a brief description of responsibilities or accomplishments if provided. Tailor the description so that it fits the job description provided. Do not invent your own details.")
-    achievements: list[str] = Field(default_factory=list, description="All achievements, awards, certifications, scholarships, recognitions, competition results, publications, or other notable accomplishments mentioned in the resume.")
+    achievements: list[Achievement] = Field(default_factory=list, description="All achievements, awards, certifications, scholarships, recognitions, or competition results mentioned in the resume, along with any verification links. Fill in exactly as provided — do not drop or alter the links.")
+    publications: list[Publication] = Field(default_factory=list, description="All research papers, preprints, or academic publications authored or co-authored by the candidate. Fill in exactly as provided — do not drop or alter the links.")
 
 # Generating cover letter
 class CoverLetterHeader(BaseModel):

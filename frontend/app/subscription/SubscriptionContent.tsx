@@ -215,7 +215,7 @@ export default function SubscriptionContent() {
             <div className="rounded border border-line p-4">
               <p className="font-medium">Monthly Plan</p>
               <p className="text-sm text-ink/60">Get monthly access to the FluxApply services. Generate cover letters and tailored resumes.</p>
-              <p className="mt-2 text-lg font-display">₹299 / month</p>
+              <p className="mt-2 text-lg font-display">₹299 or $2.99 / month</p>
             </div>
             <button
               onClick={handleSubscribe}
