@@ -148,7 +148,7 @@ export default function SubscriptionContent() {
       ? new Date(sub.expires_at).toLocaleDateString()
       : "the end of your current billing period";
     const confirmed = window.confirm(
-      `Cancel your subscription? You'll keep full access until ${expiryText} — you just won't be charged again after that.`
+      `Cancel your subscription? You'll keep full access until ${expiryText} you just won't be charged again after that.`
     );
     if (!confirmed) return;
 
