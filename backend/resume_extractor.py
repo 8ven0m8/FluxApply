@@ -25,7 +25,8 @@ load_dotenv()
 if getenv("PRODUCTION") == "true":
     llm = ChatOpenAI(
         api_key=getenv("OPENAI_KEY"),
-        model="gpt-4o-mini"
+        model="gpt-4o-mini",
+        temperature=0
     )
 else:
     llm = ChatOpenAI(

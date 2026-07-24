@@ -17,6 +17,8 @@ import json
 import logging
 import boto3
 import tempfile
+import random
+import time
 from botocore.exceptions import ClientError
 from s3_utils import generate_presigned_url, s3_uri_to_key, upload_bytes_to_s3, download_original_resume_bytes
 from usage_tracking import log_llm_usage
@@ -29,7 +31,13 @@ DB_URI=getenv("DB_URI")
 if getenv("PRODUCTION") == "true":
     llm = ChatOpenAI(
         api_key=getenv("OPENAI_KEY"),
-        model="gpt-4o-mini"
+        model="gpt-4.1-mini",
+        temperature=0.2
+    )
+    cover_letter_llm = ChatOpenAI(
+        api_key=getenv("OPENAI_KEY"),
+        model="gpt-4.1-mini",
+        temperature=0.5
     )
 else:
     llm = ChatOpenAI(
@@ -37,6 +45,7 @@ else:
         api_key=getenv("FREELLMAPI_KEY"),
         model="auto"
     )
+    cover_letter_llm = llm
 
 ########### Error handling helper functions ###########
 class LLMGenerationError(Exception):
@@ -52,6 +61,7 @@ T = TypeVar("T")
 
 
 def invoke_and_parse_with_retry(
+    llm,
     messages,
     parser: PydanticOutputParser,
     *,
@@ -59,6 +69,8 @@ def invoke_and_parse_with_retry(
     node_name: str = "unknown_node",
     user_id: str = "unknown",
     endpoint: str = "generate",
+    base_delay: float = 1.5,
+    max_delay: float = 20.0,
 ) -> T:
     """
     Calls llm.invoke(messages) and parses the response with `parser`,
@@ -71,6 +83,11 @@ def invoke_and_parse_with_retry(
     Every attempt (including failed/retried ones) is logged via
     log_llm_usage — a retry still costs real tokens, so it should still
     count toward the user's usage.
+
+    Retries use exponential backoff with jitter (base_delay * 2**attempt,
+    capped at max_delay) instead of firing back-to-back — an immediate
+    retry loop is the worst response to a 429/rate-limit error, since it
+    hits the same limit again before it's had a chance to clear.
     """
     last_error: Optional[Exception] = None
 
@@ -86,6 +103,11 @@ def invoke_and_parse_with_retry(
                 "[%s] LLM invoke/parse attempt %d/%d failed: %s",
                 node_name, attempt, max_attempts, e,
             )
+            if attempt < max_attempts:
+                delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+                delay += random.uniform(0, delay * 0.25)  # jitter
+                logger.info("[%s] Retrying in %.1fs...", node_name, delay)
+                time.sleep(delay)
 
     raise LLMGenerationError(
         f"[{node_name}] Failed to generate valid output after {max_attempts} attempts. "
@@ -162,6 +184,7 @@ def tailor_resume_node(state: TailoredResumeState, config: RunnableConfig, *, st
     """
 
     tailored = invoke_and_parse_with_retry(
+        llm,
         prompt,
         tailor_resume_parser,
         node_name="tailor_resume_node",
@@ -214,6 +237,7 @@ def generate_coverletter_node(state: TailoredResumeState, config: RunnableConfig
     """
 
     generated = invoke_and_parse_with_retry(
+        cover_letter_llm,
         prompt,
         cover_letter_parser,
         node_name="generate_coverletter_node",
@@ -279,6 +303,7 @@ def shorten_coverletter_node(state: TailoredResumeState, config: RunnableConfig,
     ]
 
     shortened = invoke_and_parse_with_retry(
+        cover_letter_llm,
         messages,
         cover_letter_parser,
         node_name="shorten_coverletter_node",
