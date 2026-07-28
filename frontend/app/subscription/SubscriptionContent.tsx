@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { getSubscriptionStatus, createRazorpaySubscription, cancelRazorpaySubscription, SubscriptionStatus } from "@/lib/api";
+import { getSubscriptionStatus, whoAmI, createRazorpaySubscription, cancelRazorpaySubscription, SubscriptionStatus } from "@/lib/api";
 import { ApiError } from "@/lib/api";
 
 declare global {
@@ -21,6 +21,7 @@ export default function SubscriptionContent() {
   const [error, setError] = useState<string | null>(null);
   const [subscribing, setSubscribing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [userId, setUserId] = useState<string | null>(null);
 
   const justCheckedOut = searchParams.get("success") === "true";
 
@@ -33,6 +34,12 @@ export default function SubscriptionContent() {
 
     let cancelled = false;
     const token = session.idToken;
+
+    whoAmI(token)
+      .then((data) => {
+        if (!cancelled) setUserId(data.user_id);
+      })
+      .catch(() => {});
 
     const fetchOnce = () =>
       getSubscriptionStatus(token).then((data) => {
@@ -176,6 +183,12 @@ export default function SubscriptionContent() {
 
   const isActive = sub?.active ?? false;
 
+  const paymentEmailHref = `mailto:fluxapply.payments@gmail.com?subject=${encodeURIComponent(
+    `User subscription for ${session?.user?.email || ""}`
+  )}&body=${encodeURIComponent(
+    `User ID: ${userId || ""}`
+  )}`;
+
   return (
     <div className="flex min-h-screen flex-col items-center justify-center px-6 py-14">
       <div className="w-full max-w-md space-y-6">
@@ -216,6 +229,9 @@ export default function SubscriptionContent() {
               <p className="font-medium">Monthly Plan</p>
               <p className="text-sm text-ink/60">Get monthly access to the FluxApply services. Generate cover letters and tailored resumes.</p>
               <p className="mt-2 text-lg font-display">₹299 or $2.99 / month</p>
+              <p className="text-xs text-ink/20">
+                For international payments, email: <a href={paymentEmailHref} className="text-ink/40 underline underline-offset-2 hover:text-ink">fluxapply.payments@gmail.com</a>
+              </p>
             </div>
             <button
               onClick={handleSubscribe}
