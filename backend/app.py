@@ -268,6 +268,8 @@ def upload_resume(
     if sub_active:
         enforce_monthly_cap(user_id, MONTHLY_USER_COST_CAP_USD)
 
+    if not file.filename:
+        raise HTTPException(400, "Uploaded file is missing a filename.")
     suffix = Path(file.filename).suffix.lower()
     if suffix not in (".pdf", ".docx"):
         raise HTTPException(400, f"Unsupported file type: {suffix}. Only .pdf and .docx allowed.")
@@ -572,6 +574,10 @@ def render_resume(
     store: PostgresStore = Depends(get_store),
 ):
     user_id = generate_user_id(email)
+    sub_active = is_subscribed(store, user_id, email)
+
+    if not sub_active and store.get(("user", user_id, "tailored_resumes"), jd_id) is None:
+        raise SubscriptionRequiredError("Generate a resume first, or subscribe to render freely.")
 
     store.put(("user", user_id, "tailored_resumes"), jd_id, {"data": content.model_dump()})
 

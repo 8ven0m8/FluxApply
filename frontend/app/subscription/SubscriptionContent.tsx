@@ -230,7 +230,7 @@ export default function SubscriptionContent() {
               <p className="text-sm text-ink/60">Get monthly access to the FluxApply services. Generate cover letters and tailored resumes.</p>
               <p className="mt-2 text-lg font-display">₹299 or $2.99 / month</p>
               <p className="text-xs text-ink/20">
-                For international payments, email: <a href={paymentEmailHref} className="text-ink/40 underline underline-offset-2 hover:text-ink">fluxapply.payments@gmail.com</a>
+                For subscription related queries, email: <a href={paymentEmailHref} className="text-ink/40 underline underline-offset-2 hover:text-ink">fluxapply.payments@gmail.com</a>
               </p>
             </div>
             <button
